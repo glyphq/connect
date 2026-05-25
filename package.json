@@ -1,6 +1,6 @@
 {
   "name": "@sigil-oss/connect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Framework-agnostic TypeScript SDK for launching and signing Sigil deep-link requests.",
   "type": "module",
   "license": "MIT",
