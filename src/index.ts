@@ -80,6 +80,56 @@ export interface SigilEnvelope {
   proof?: SigilProof;
 }
 
+// ── Callback response types ────────────────────────────────────────────────────
+
+export interface SigilSignedTransferCallback {
+  status: "signed";
+  type: "transfer" | "sc_call";
+  nonce: string;
+  identity: string;
+  tx_hash: string;
+  target_tick: number;
+}
+
+export interface SigilSignedMessageCallback {
+  status: "signed";
+  type: "sign_message";
+  nonce: string;
+  identity: string;
+  signature: string;
+  public_key: string;
+}
+
+export interface SigilConnectedCallback {
+  status: "connected";
+  type: "connect";
+  nonce: string;
+  identity: string;
+  permissions: SigilPermission[];
+}
+
+export interface SigilVerifiedCallback {
+  status: "verified";
+  type: "verify_message";
+  nonce: string;
+  valid: boolean;
+  identity: string;
+}
+
+export interface SigilRejectedCallback {
+  status: "rejected";
+  type: SigilRequestType;
+  nonce: string;
+  reason: "user_rejected";
+}
+
+export type SigilCallbackResponse =
+  | SigilSignedTransferCallback
+  | SigilSignedMessageCallback
+  | SigilConnectedCallback
+  | SigilVerifiedCallback
+  | SigilRejectedCallback;
+
 export interface SigilUrlOptions {
   includeLegacyCallbackParam?: boolean;
 }
@@ -99,6 +149,18 @@ export interface SigilProofOptions {
 }
 
 const DEFAULT_EXPIRY_SECONDS = 300;
+
+function base64UrlToBytes(value: string): Uint8Array {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64.padEnd(base64.length + (4 - (base64.length % 4)) % 4, "=");
+  if (typeof Buffer !== "undefined") {
+    return new Uint8Array(Buffer.from(padded, "base64"));
+  }
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   if (typeof Buffer !== "undefined") {
@@ -252,7 +314,12 @@ export function openSigilUrl(url: string): void {
   if (typeof window === "undefined") {
     throw new Error("openSigilUrl can only be used in a browser environment");
   }
-  window.location.assign(url);
+  const a = document.createElement("a");
+  a.href = url;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 export function launchSigilRequest(envelope: SigilEnvelope, options?: SigilUrlOptions): string {
@@ -318,4 +385,94 @@ export async function signEnvelope(
 function derivePublicJwk(privateJwk: JsonWebKey): JsonWebKey {
   const { d: _discarded, key_ops: _ops, ...rest } = privateJwk;
   return rest;
+}
+
+// ── Callback parsing ───────────────────────────────────────────────────────────
+
+export function parseCallbackResponse(body: unknown): SigilCallbackResponse {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Callback body must be a JSON object");
+  }
+  const raw = body as Record<string, unknown>;
+
+  const status = raw["status"];
+  const nonce = raw["nonce"];
+  const type = raw["type"];
+
+  if (typeof status !== "string") throw new Error("Missing or invalid 'status'");
+  if (typeof nonce !== "string") throw new Error("Missing or invalid 'nonce'");
+  if (typeof type !== "string") throw new Error("Missing or invalid 'type'");
+
+  if (status === "rejected") {
+    return { status: "rejected", type: type as SigilRequestType, nonce, reason: "user_rejected" };
+  }
+
+  if (status === "signed" && (type === "transfer" || type === "sc_call")) {
+    const identity = raw["identity"];
+    const tx_hash = raw["tx_hash"];
+    const target_tick = raw["target_tick"];
+    if (typeof identity !== "string") throw new Error("Missing 'identity'");
+    if (typeof tx_hash !== "string") throw new Error("Missing 'tx_hash'");
+    if (typeof target_tick !== "number") throw new Error("Missing 'target_tick'");
+    return { status: "signed", type, nonce, identity, tx_hash, target_tick };
+  }
+
+  if (status === "signed" && type === "sign_message") {
+    const identity = raw["identity"];
+    const signature = raw["signature"];
+    const public_key = raw["public_key"];
+    if (typeof identity !== "string") throw new Error("Missing 'identity'");
+    if (typeof signature !== "string") throw new Error("Missing 'signature'");
+    if (typeof public_key !== "string") throw new Error("Missing 'public_key'");
+    return { status: "signed", type: "sign_message", nonce, identity, signature, public_key };
+  }
+
+  if (status === "connected" && type === "connect") {
+    const identity = raw["identity"];
+    const permissions = raw["permissions"];
+    if (typeof identity !== "string") throw new Error("Missing 'identity'");
+    if (!Array.isArray(permissions)) throw new Error("Missing or invalid 'permissions'");
+    return { status: "connected", type: "connect", nonce, identity, permissions: permissions as SigilPermission[] };
+  }
+
+  if (status === "verified" && type === "verify_message") {
+    const valid = raw["valid"];
+    const identity = raw["identity"];
+    if (typeof valid !== "boolean") throw new Error("Missing or invalid 'valid'");
+    if (typeof identity !== "string") throw new Error("Missing 'identity'");
+    return { status: "verified", type: "verify_message", nonce, valid, identity };
+  }
+
+  throw new Error(`Unknown callback status/type: "${status}"/"${type}"`);
+}
+
+// ── Signature verification ─────────────────────────────────────────────────────
+
+export async function verifyEnvelopeSignature(
+  envelope: SigilEnvelope,
+  options?: { publicJwk?: JsonWebKey },
+): Promise<boolean> {
+  const proof = envelope.proof;
+  if (!proof) return false;
+
+  const jwk = options?.publicJwk ?? proof.public_jwk;
+  if (!jwk) throw new Error("No public key available: provide publicJwk or include it in the proof");
+
+  const key = await globalThis.crypto.subtle.importKey(
+    "jwk",
+    jwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"],
+  );
+
+  const payload = serializeSignedRequestPayload(envelope);
+  const sigBytes = base64UrlToBytes(proof.signature);
+
+  return globalThis.crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    key,
+    sigBytes.buffer as ArrayBuffer,
+    new TextEncoder().encode(payload),
+  );
 }

@@ -180,7 +180,60 @@ import { launchSigilRequest } from "@sigil-oss/connect";
 launchSigilRequest(envelope);
 ```
 
-This helper throws when used outside a browser environment.
+This helper uses an anchor-click to trigger the protocol handler without navigating the current page. It throws when used outside a browser environment.
+
+---
+
+## Callback Response Parsing
+
+When Sigil posts a callback to your server, parse and type the body with `parseCallbackResponse`:
+
+```ts
+import { parseCallbackResponse } from "@sigil-oss/connect";
+
+// In your POST /sigil/callback handler:
+const body = await request.json();
+const result = parseCallbackResponse(body);
+
+switch (result.status) {
+  case "signed":
+    if (result.type === "transfer" || result.type === "sc_call") {
+      console.log(result.tx_hash, result.target_tick);
+    } else if (result.type === "sign_message") {
+      console.log(result.signature, result.public_key);
+    }
+    break;
+  case "connected":
+    console.log(result.identity, result.permissions);
+    break;
+  case "verified":
+    console.log(result.valid, result.identity);
+    break;
+  case "rejected":
+    console.log(result.reason); // "user_rejected"
+    break;
+}
+```
+
+`parseCallbackResponse` throws a descriptive `Error` if the body does not match any known response shape.
+
+---
+
+## Signature Verification
+
+Verify a signed envelope's proof before sending, or inspect an envelope you received:
+
+```ts
+import { verifyEnvelopeSignature } from "@sigil-oss/connect";
+
+// Proof embeds public_jwk — no extra argument needed:
+const valid = await verifyEnvelopeSignature(signed);
+
+// Or supply the public key from your own registry:
+const valid = await verifyEnvelopeSignature(signed, { publicJwk });
+```
+
+Returns `false` (not a rejection) when the envelope has no proof. Throws if no public key is available.
 
 ---
 
@@ -201,11 +254,16 @@ This helper throws when used outside a browser environment.
 
 - `isAllowedCallbackUrl()`
 
-### Signing helpers
+### Signing and verification helpers
 
 - `serializeSignedRequestPayload()`
 - `hashSignedRequestPayload()`
 - `signEnvelope()`
+- `verifyEnvelopeSignature()`
+
+### Callback parsing
+
+- `parseCallbackResponse()`
 
 ### Types
 
@@ -218,6 +276,12 @@ This helper throws when used outside a browser environment.
 - `SigilSignMessageRequest`
 - `SigilVerifyMessageRequest`
 - `SigilConnectRequest`
+- `SigilCallbackResponse`
+- `SigilSignedTransferCallback`
+- `SigilSignedMessageCallback`
+- `SigilConnectedCallback`
+- `SigilVerifiedCallback`
+- `SigilRejectedCallback`
 
 ---
 
