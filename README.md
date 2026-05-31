@@ -1,213 +1,103 @@
+<div align="center">
+
 # `@sigil-oss/connect`
 
-Framework-agnostic TypeScript SDK for launching Sigil deep-link requests.
+**TypeScript SDK for Sigil deep-link requests**
 
-`@sigil-oss/connect` gives web apps, desktop apps, and hybrid frontends a small typed layer for interacting with the Sigil wallet without depending on React, Vue, Svelte, or any framework runtime.
+[![npm](https://img.shields.io/npm/v/@sigil-oss/connect?style=flat-square&color=0d0d0d&labelColor=1a1a1a)](https://www.npmjs.com/package/@sigil-oss/connect)
+[![License](https://img.shields.io/badge/license-MIT-0d0d0d?style=flat-square&labelColor=1a1a1a)](./LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/sigil-oss/sigil.connect/release.yml?style=flat-square&label=build&color=0d0d0d&labelColor=1a1a1a)](https://github.com/sigil-oss/sigil.connect/actions)
 
-Use it to:
+Framework-agnostic · Zero runtime dependencies · Fully typed
 
-- build valid `sigil://` request URLs
-- create typed `transfer`, `connect`, `sign_message`, `verify_message`, and `sc_call` requests
-- attach callback URLs safely
-- generate signed request proofs for trusted Sigil flows
+</div>
 
 ---
+
+Build, sign, and dispatch `sigil://` requests to the [Sigil desktop wallet](https://github.com/sigil-oss/sigil.app) from any web app, dApp, or toolchain — no React, Vue, or framework runtime required.
 
 ## Install
 
 ```bash
 bun add @sigil-oss/connect
-```
-
-or
-
-```bash
+# or
 npm install @sigil-oss/connect
 ```
-
----
-
-## Why This Package Exists
-
-Sigil itself is a desktop wallet.
-
-This package is the companion SDK for dApps and tools that want to hand requests off to Sigil in a predictable, typed, cross-framework way. It keeps request construction in sync with the wallet’s current deep-link model, including:
-
-- request envelopes
-- callback handling
-- nonce / expiry defaults
-- optional signed proof metadata
-
----
 
 ## Quick Start
 
 ```ts
-import {
-  createTransferRequest,
-  createEnvelope,
-  buildSigilUrl,
-} from "@sigil-oss/connect";
+import { createTransferRequest, createEnvelope, buildSigilUrl } from "@sigil-oss/connect";
 
 const request = createTransferRequest({
-  type: "transfer",
-  dapp: {
-    name: "Demo App",
-    origin: "https://demo.app",
-  },
-  to: "UVYAOYTNYCRBVFBHNFIJUEOUEPEDIDUWWEAXKFSJEBJVASCQEROJOVOEEATL",
+  dapp: { name: "My App", origin: "https://my.app" },
+  to: "SIGILZXQNLOTDENBWIBTOGRNBPLBWISKLZCQQFMEECEKOTNVJMMGRWYALYQL",
   amount: "1000",
 });
 
 const envelope = createEnvelope(request, {
-  callback: "https://demo.app/api/sigil/callback",
+  callback: "https://my.app/api/sigil/callback",
 });
 
+// Build the deep-link URL
 const url = buildSigilUrl(envelope);
-```
 
-You can then:
-
-- assign `url` to a button or anchor
-- call `window.location.assign(url)`
-- use `launchSigilRequest(envelope)` in browser environments
-
----
-
-## Request Builders
-
-The package exposes typed helpers for the current Sigil request model:
-
-- `createTransferRequest()`
-- `createScCallRequest()`
-- `createSignMessageRequest()`
-- `createVerifyMessageRequest()`
-- `createConnectRequest()`
-
-All builders:
-
-- require an HTTPS `dapp.origin`
-- generate a nonce by default
-- generate a short-lived expiry by default
-
-You can override nonce or expiry when needed.
-
----
-
-## Envelope Model
-
-Sigil now accepts request envelopes, not only flat request payloads.
-
-```ts
-interface SigilEnvelope {
-  request: SigilRequest;
-  callback?: string | null;
-  proof?: SigilProof;
-}
-```
-
-Build one with:
-
-```ts
-const envelope = createEnvelope(request, {
-  callback: "https://demo.app/api/callback",
-});
-```
-
-Then encode it into a deep link:
-
-```ts
-const url = buildSigilUrl(envelope);
-```
-
-If you need compatibility with older callback query handling, you can include the legacy `cb` parameter too:
-
-```ts
-const url = buildSigilUrl(envelope, {
-  includeLegacyCallbackParam: true,
-});
-```
-
----
-
-## Signed Requests
-
-If your integration uses Sigil’s signed trust flow, you can attach an ES256 proof:
-
-```ts
-import {
-  createConnectRequest,
-  createEnvelope,
-  signEnvelope,
-} from "@sigil-oss/connect";
-
-const request = createConnectRequest({
-  type: "connect",
-  dapp: {
-    name: "Trusted Demo",
-    origin: "https://demo.app",
-  },
-  permissions: ["transfer", "sign_message"],
-});
-
-const envelope = createEnvelope(request, {
-  callback: "https://demo.app/api/callback",
-});
-
-const signed = await signEnvelope(envelope, {
-  issuer: "demo.app",
-  privateJwk,
-  publicJwk,
-  includePublicJwk: true,
-});
-```
-
-Related helpers:
-
-- `serializeSignedRequestPayload()`
-- `hashSignedRequestPayload()`
-- `signEnvelope()`
-
----
-
-## Browser Helper
-
-To launch Sigil directly from a browser context:
-
-```ts
+// Or launch directly in a browser
 import { launchSigilRequest } from "@sigil-oss/connect";
-
 launchSigilRequest(envelope);
 ```
 
-This helper uses an anchor-click to trigger the protocol handler without navigating the current page. It throws when used outside a browser environment.
+## Request Types
 
----
+| Builder | Description |
+|---|---|
+| `createTransferRequest()` | Sign a QU transfer to a recipient |
+| `createScCallRequest()` | Sign a smart contract input |
+| `createSignMessageRequest()` | Sign a message for off-chain auth |
+| `createVerifyMessageRequest()` | Verify an existing signature bundle |
+| `createConnectRequest()` | Request a wallet session with permissions |
 
-## Callback Response Parsing
+All builders require an HTTPS `dapp.origin`, and generate a nonce and expiry by default.
 
-When Sigil posts a callback to your server, parse and type the body with `parseCallbackResponse`:
+## Envelope Model
+
+Requests are wrapped in an envelope before encoding into the deep-link URL:
+
+```ts
+interface SigilEnvelope {
+  request: SigilRequest;       // discriminated union on "type"
+  callback?: string | null;    // server POST delivery
+  proof?: SigilProof;          // optional signed trust proof
+}
+```
+
+```ts
+const envelope = createEnvelope(request, { callback: "https://my.app/api/callback" });
+const url = buildSigilUrl(envelope);
+```
+
+## Result Delivery
+
+Sigil delivers results to your app via one or both modes:
+
+| Mode | How it works |
+|---|---|
+| `callback` | Sigil POSTs a JSON result to your server after the user acts |
+| `redirect_uri` | Sigil opens `redirect_uri?result=<base64url>` in the browser |
+
+Parse the callback body on your server:
 
 ```ts
 import { parseCallbackResponse } from "@sigil-oss/connect";
 
-// In your POST /sigil/callback handler:
-const body = await request.json();
-const result = parseCallbackResponse(body);
+const result = parseCallbackResponse(await req.json());
 
 switch (result.status) {
   case "signed":
-    if (result.type === "transfer" || result.type === "sc_call") {
-      console.log(result.tx_hash, result.target_tick);
-    } else if (result.type === "sign_message") {
-      console.log(result.signature, result.public_key);
-    }
+    console.log(result.tx_hash, result.target_tick);
     break;
   case "connected":
     console.log(result.identity, result.permissions);
-    break;
-  case "verified":
-    console.log(result.valid, result.identity);
     break;
   case "rejected":
     console.log(result.reason); // "user_rejected"
@@ -215,104 +105,61 @@ switch (result.status) {
 }
 ```
 
-`parseCallbackResponse` throws a descriptive `Error` if the body does not match any known response shape.
+## Signed Requests
 
----
+Attach an ES256 proof for trusted dApp flows:
 
-## Signature Verification
+```ts
+import { createConnectRequest, createEnvelope, signEnvelope } from "@sigil-oss/connect";
 
-Verify a signed envelope's proof before sending, or inspect an envelope you received:
+const request = createConnectRequest({
+  dapp: { name: "Trusted App", origin: "https://trusted.app" },
+  permissions: ["transfer", "sign_message"],
+});
+
+const signed = await signEnvelope(createEnvelope(request), {
+  issuer: "trusted.app",
+  privateJwk,
+  publicJwk,
+  includePublicJwk: true,
+});
+```
+
+Verify a received envelope:
 
 ```ts
 import { verifyEnvelopeSignature } from "@sigil-oss/connect";
 
-// Proof embeds public_jwk — no extra argument needed:
 const valid = await verifyEnvelopeSignature(signed);
-
-// Or supply the public key from your own registry:
-const valid = await verifyEnvelopeSignature(signed, { publicJwk });
 ```
 
-Returns `false` (not a rejection) when the envelope has no proof. Throws if no public key is available.
+## API Reference
 
----
+**URL & envelope**
+`createEnvelope` · `encodeEnvelope` · `buildSigilUrl` · `openSigilUrl` · `launchSigilRequest`
 
-## API Surface
+**Request builders**
+`createTransferRequest` · `createScCallRequest` · `createSignMessageRequest` · `createVerifyMessageRequest` · `createConnectRequest`
 
-### URL and request helpers
+**Signing & verification**
+`signEnvelope` · `verifyEnvelopeSignature` · `serializeSignedRequestPayload` · `hashSignedRequestPayload`
 
-- `createNonce()`
-- `createExpiry()`
-- `withRequestDefaults()`
-- `createEnvelope()`
-- `encodeEnvelope()`
-- `buildSigilUrl()`
-- `openSigilUrl()`
-- `launchSigilRequest()`
+**Utilities**
+`createNonce` · `createExpiry` · `withRequestDefaults` · `isAllowedCallbackUrl` · `parseCallbackResponse`
 
-### Validation helpers
+## Constraints
 
-- `isAllowedCallbackUrl()`
+- `dapp.origin` must be `https://`
+- Callback URLs must be `https://`, except `http://localhost` and `http://127.0.0.1`
+- `launchSigilRequest` requires a browser environment (`window`)
+- Deep links target `sigil://v1/request?d=...`
 
-### Signing and verification helpers
-
-- `serializeSignedRequestPayload()`
-- `hashSignedRequestPayload()`
-- `signEnvelope()`
-- `verifyEnvelopeSignature()`
-
-### Callback parsing
-
-- `parseCallbackResponse()`
-
-### Types
-
-- `SigilRequest`
-- `SigilEnvelope`
-- `SigilProof`
-- `SigilPermission`
-- `SigilTransferRequest`
-- `SigilScCallRequest`
-- `SigilSignMessageRequest`
-- `SigilVerifyMessageRequest`
-- `SigilConnectRequest`
-- `SigilCallbackResponse`
-- `SigilSignedTransferCallback`
-- `SigilSignedMessageCallback`
-- `SigilConnectedCallback`
-- `SigilVerifiedCallback`
-- `SigilRejectedCallback`
-
----
-
-## Compatibility Notes
-
-- `dapp.origin` must use `https://`
-- callback URLs must use `https://`, except `http://localhost` and `http://127.0.0.1`
-- the generated deep links target Sigil’s current `sigil://v1/request?d=...` format
-- this package is framework-agnostic, but browser-launch helpers require `window`
-
----
-
-## Local Development
+## Development
 
 ```bash
 bun install
-bun run check
+bun run check   # lint + types + tests
 ```
-
----
-
-## Release Flow
-
-This package uses Changesets.
-
-- add a changeset for each user-facing package change
-- merge to `main`
-- let the GitHub release workflow open or update the release PR
-- publish through the Changesets action with `NPM_TOKEN`
-
----
 
 ## License
 
