@@ -1,0 +1,8 @@
+# CODEOWNERS
+* @alez04
+
+# Repository configuration and automation.
+.github/ @alez04
+.github/workflows/ @alez04
+.github/CODEOWNERS @alez04
+CODEOWNERS @alez04
