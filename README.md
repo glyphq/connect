@@ -1,12 +1,12 @@
 <div align="center">
 
-# `@sigil-oss/connect`
+# `@glyph-oss/connect`
 
-**TypeScript SDK for Sigil deep-link requests**
+**TypeScript SDK for Glyph deep-link requests**
 
-[![npm](https://img.shields.io/npm/v/@sigil-oss/connect?style=flat-square&color=0d0d0d&labelColor=1a1a1a)](https://www.npmjs.com/package/@sigil-oss/connect)
+[![npm](https://img.shields.io/npm/v/@glyph-oss/connect?style=flat-square&color=0d0d0d&labelColor=1a1a1a)](https://www.npmjs.com/package/@glyph-oss/connect)
 [![License](https://img.shields.io/badge/license-MIT-0d0d0d?style=flat-square&labelColor=1a1a1a)](./LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/sigil-oss/sigil.connect/release.yml?style=flat-square&label=build&color=0d0d0d&labelColor=1a1a1a)](https://github.com/sigil-oss/sigil.connect/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/glyphq/connect/ci.yml?style=flat-square&label=build&color=0d0d0d&labelColor=1a1a1a)](https://github.com/glyphq/connect/actions)
 
 Framework-agnostic · Zero runtime dependencies · Fully typed
 
@@ -14,37 +14,38 @@ Framework-agnostic · Zero runtime dependencies · Fully typed
 
 ---
 
-Build, sign, and dispatch `sigil://` requests to the [Sigil desktop wallet](https://github.com/sigil-oss/sigil.app) from any web app, dApp, or toolchain — no React, Vue, or framework runtime required.
+Build and dispatch `glyph://` requests to the [Glyph desktop wallet](https://github.com/glyphq/wallet) from any web app, dApp, or toolchain. Learn more at [glyphq.org](https://glyphq.org).
 
 ## Install
 
 ```bash
-bun add @sigil-oss/connect
+bun add @glyph-oss/connect
 # or
-npm install @sigil-oss/connect
+npm install @glyph-oss/connect
 ```
 
 ## Quick Start
 
 ```ts
-import { createTransferRequest, createEnvelope, buildSigilUrl } from "@sigil-oss/connect";
+import { createTransferRequest, createEnvelope, buildGlyphUrl } from "@glyph-oss/connect";
 
 const request = createTransferRequest({
+  type: "transfer",
   dapp: { name: "My App", origin: "https://my.app" },
-  to: "SIGILZXQNLOTDENBWIBTOGRNBPLBWISKLZCQQFMEECEKOTNVJMMGRWYALYQL",
+  to: "UVYAOYTNYCRBVFBHNFIJUEOUEPEDIDUWWEAXKFSJEBJVASCQEROJOVOEEATL",
   amount: "1000",
 });
 
 const envelope = createEnvelope(request, {
-  callback: "https://my.app/api/sigil/callback",
+  callback: "https://my.app/api/glyph/callback",
 });
 
-// Build the deep-link URL
-const url = buildSigilUrl(envelope);
+// Build the deep-link URL.
+const url = buildGlyphUrl(envelope);
 
-// Or launch directly in a browser
-import { launchSigilRequest } from "@sigil-oss/connect";
-launchSigilRequest(envelope);
+// Or launch directly in a browser.
+import { launchGlyphRequest } from "@glyph-oss/connect";
+launchGlyphRequest(envelope);
 ```
 
 ## Request Types
@@ -57,44 +58,48 @@ launchSigilRequest(envelope);
 | `createVerifyMessageRequest()` | Verify an existing signature bundle |
 | `createConnectRequest()` | Request a wallet session with permissions |
 
-All builders require an HTTPS `dapp.origin`, and generate a nonce and expiry by default.
+All builders require an HTTPS `dapp.origin`, then generate a nonce and expiry by default.
 
 ## Envelope Model
 
 Requests are wrapped in an envelope before encoding into the deep-link URL:
 
 ```ts
-interface SigilEnvelope {
-  request: SigilRequest;       // discriminated union on "type"
-  callback?: string | null;    // server POST delivery
-  proof?: SigilProof;          // optional signed trust proof
+interface GlyphEnvelope {
+  request: GlyphRequest;       // discriminated union on "type"
+  callback?: string | null;    // optional server delivery URL
+  redirect_uri?: string | null; // optional browser result URL
 }
 ```
 
 ```ts
 const envelope = createEnvelope(request, { callback: "https://my.app/api/callback" });
-const url = buildSigilUrl(envelope);
+const url = buildGlyphUrl(envelope);
 ```
+
+Deep links target `glyph://v1/request?d=<base64url envelope>`.
 
 ## Result Delivery
 
-Sigil delivers results to your app via one or both modes:
+Glyph delivers results to your app via one or both modes:
 
 | Mode | How it works |
 |---|---|
-| `callback` | Sigil POSTs a JSON result to your server after the user acts |
-| `redirect_uri` | Sigil opens `redirect_uri?result=<base64url>` in the browser |
+| `callback` | Glyph POSTs a JSON result to your server after the user acts |
+| `redirect_uri` | Glyph opens `redirect_uri?result=<base64url>` in the browser |
 
 Parse the callback body on your server:
 
 ```ts
-import { parseCallbackResponse } from "@sigil-oss/connect";
+import { parseCallbackResponse } from "@glyph-oss/connect";
 
 const result = parseCallbackResponse(await req.json());
 
 switch (result.status) {
   case "signed":
-    console.log(result.tx_hash, result.target_tick);
+    if (result.type === "transfer" || result.type === "sc_call") {
+      console.log(result.tx_hash, result.target_tick);
+    }
     break;
   case "connected":
     console.log(result.identity, result.permissions);
@@ -105,60 +110,51 @@ switch (result.status) {
 }
 ```
 
-## Signed Requests
+## Browser Promise Flow
 
-Attach an ES256 proof for trusted dApp flows:
-
-```ts
-import { createConnectRequest, createEnvelope, signEnvelope } from "@sigil-oss/connect";
-
-const request = createConnectRequest({
-  dapp: { name: "Trusted App", origin: "https://trusted.app" },
-  permissions: ["transfer", "sign_message"],
-});
-
-const signed = await signEnvelope(createEnvelope(request), {
-  issuer: "trusted.app",
-  privateJwk,
-  publicJwk,
-  includePublicJwk: true,
-});
-```
-
-Verify a received envelope:
+Use `glyphRequest()` when you want a single promise instead of wiring your own callback handler.
 
 ```ts
-import { verifyEnvelopeSignature } from "@sigil-oss/connect";
+import { createConnectRequest, glyphRequest, handleRedirect } from "@glyph-oss/connect";
 
-const valid = await verifyEnvelopeSignature(signed);
+const result = await glyphRequest(
+  createConnectRequest({
+    type: "connect",
+    dapp: { name: "My App", origin: "https://my.app" },
+    permissions: ["transfer", "sign_message"],
+  }),
+);
+
+// On your /__glyph__ route:
+handleRedirect();
 ```
+
+`glyphRequest()` opens Glyph, waits on `BroadcastChannel`, and resolves when the callback route broadcasts the `result` query parameter.
 
 ## API Reference
 
-**URL & envelope**
-`createEnvelope` · `encodeEnvelope` · `buildSigilUrl` · `openSigilUrl` · `launchSigilRequest`
+**URL and envelope**
+`createEnvelope` · `encodeEnvelope` · `buildGlyphUrl` · `openGlyphUrl` · `launchGlyphRequest` · `glyphRequest` · `handleRedirect`
 
 **Request builders**
 `createTransferRequest` · `createScCallRequest` · `createSignMessageRequest` · `createVerifyMessageRequest` · `createConnectRequest`
 
-**Signing & verification**
-`signEnvelope` · `verifyEnvelopeSignature` · `serializeSignedRequestPayload` · `hashSignedRequestPayload`
-
 **Utilities**
-`createNonce` · `createExpiry` · `withRequestDefaults` · `isAllowedCallbackUrl` · `parseCallbackResponse`
+`createNonce` · `createExpiry` · `withRequestDefaults` · `isAllowedCallbackUrl` · `base64UrlToString` · `parseCallbackResponse`
 
 ## Constraints
 
-- `dapp.origin` must be `https://`
-- Callback URLs must be `https://`, except `http://localhost` and `http://127.0.0.1`
-- `launchSigilRequest` requires a browser environment (`window`)
-- Deep links target `sigil://v1/request?d=...`
+- `dapp.origin` must be `https://`.
+- Callback URLs must be `https://`, except `http://localhost`, `http://127.0.0.1`, and `http://[::1]`.
+- `launchGlyphRequest` and `glyphRequest` require a browser environment with `window`.
+- Deep links target `glyph://v1/request?d=...`.
 
 ## Development
 
 ```bash
 bun install
-bun run check   # lint + types + tests
+bun run check
+bun run audit
 ```
 
 ## License
