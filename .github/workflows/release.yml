@@ -92,6 +92,7 @@ jobs:
       - name: Publish package
         if: steps.changesets.outputs.has_pending == 'false'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
@@ -102,3 +103,14 @@ jobs:
           fi
           bun run changeset:publish
           git push --follow-tags
+
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          notes_file="$(mktemp)"
+          node scripts/extract-changelog-notes.mjs "${version}" > "${notes_file}"
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "GitHub Release ${tag} already exists. Leaving it unchanged."
+          else
+            gh release create "${tag}" --verify-tag --title "${tag}" --notes-file "${notes_file}"
+          fi
