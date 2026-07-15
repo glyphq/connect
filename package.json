@@ -52,6 +52,7 @@
     "test": "bun test",
     "check": "bun run lint && bun run test && bun run build",
     "audit": "bun audit --audit-level=high",
+    "release:notes": "node scripts/extract-changelog-notes.mjs",
     "changeset": "changeset",
     "changeset:publish": "changeset publish",
     "version": "changeset version",
