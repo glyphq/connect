@@ -3,11 +3,11 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@sigil-oss/connect",
+      "name": "@glyph-oss/connect",
       "devDependencies": {
-        "@changesets/cli": "^2.29.6",
-        "@types/bun": "latest",
-        "typescript": "^5.8.3",
+        "@changesets/cli": "2.31.0",
+        "@types/bun": "1.3.14",
+        "typescript": "5.9.3",
       },
     },
   },

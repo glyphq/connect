@@ -1,8 +1,8 @@
-# `@sigil-oss/connect` Testing Guide
+# `@glyph-oss/connect` Testing Guide
 
-Release checklist for the Sigil Connect SDK.
+Release checklist for the Glyph Connect SDK.
 
-This package is small, but it sits directly on the wallet handoff boundary. Treat request-format drift and callback-policy regressions as release blockers.
+This package sits directly on the wallet handoff boundary. Treat request-format drift and callback-policy regressions as release blockers.
 
 ---
 
@@ -11,8 +11,9 @@ This package is small, but it sits directly on the wallet handoff boundary. Trea
 Run before every release:
 
 ```bash
-bun install
+bun install --frozen-lockfile
 bun run check
+bun run audit
 ```
 
 This covers:
@@ -20,6 +21,7 @@ This covers:
 - TypeScript typecheck
 - unit tests
 - production build output
+- dependency audit for high-severity advisories
 
 ---
 
@@ -49,40 +51,41 @@ Verify:
 - `createEnvelope()` accepts valid callback URLs
 - invalid callback URLs throw
 - `encodeEnvelope()` returns a base64url payload
-- `buildSigilUrl()` produces `sigil://v1/request?d=...`
-- legacy callback query param is only included when requested
+- `buildGlyphUrl()` produces `glyph://v1/request?d=...`
+- callback URLs stay inside the encoded envelope instead of being duplicated as query params
 
 ### Browser launch helper
 
 Verify:
 
-- `launchSigilRequest()` returns the final URL
-- browser-only helper throws cleanly in a non-browser environment
+- `launchGlyphRequest()` returns the final URL
+- `glyphRequest()` rejects cleanly in a non-browser environment
+- `handleRedirect()` broadcasts parsed callback results on the expected `glyph:result:<nonce>` channel
 
-### Signed request helpers
+### Callback parser
 
 Verify:
 
-- `serializeSignedRequestPayload()` is stable
-- `hashSignedRequestPayload()` is deterministic
-- `signEnvelope()` emits `proof.algorithm = "ES256"`
-- signed proof includes `payload_hash`
-- optional `public_jwk` inclusion works
+- accepted statuses are narrowed to the expected discriminated union
+- malformed base64url values throw before parsing
+- unknown request types throw
+- unknown permissions throw
+- rejection reasons are limited to `user_rejected`
 
 ---
 
 ## Cross-Compatibility Pass
 
-Before publishing, validate one generated URL against a current installed Sigil build.
+Before publishing, validate one generated URL against a current installed Glyph build.
 
 At minimum:
 
 1. Generate a `transfer` request URL with this package.
-2. Open it against Sigil.
-3. Confirm Sigil shows the request review screen.
+2. Open it against Glyph.
+3. Confirm Glyph shows the request review screen.
 4. Repeat for `connect` and `sign_message`.
 
-If Sigil rejects the payload, do not ship until the package and wallet are back in sync.
+If Glyph rejects the payload, do not ship until the package and wallet are back in sync.
 
 ---
 
@@ -92,9 +95,9 @@ Treat these as high risk:
 
 - wallet request-envelope shape changes
 - callback policy changes
-- signed proof serialization drift
 - request type field renames
 - accidental Node-only or browser-only runtime assumptions in shared helpers
+- old protocol or package references reappearing in public API or docs
 
 ---
 
@@ -104,7 +107,7 @@ Do not publish if any of these fail:
 
 - package fails `bun run check`
 - built `dist/` output is missing JS or `.d.ts`
-- generated deep links no longer open current Sigil builds
+- generated deep links no longer open current Glyph builds
 - non-HTTPS origin validation regresses
 - callback URL policy regresses
-- signing helper output becomes incompatible with Sigil trust verification
+- `git grep -i` finds old package names or protocols in source, docs, or metadata

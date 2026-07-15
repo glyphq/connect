@@ -1,45 +1,48 @@
 import { describe, expect, test } from "bun:test";
 import {
-	buildSigilUrl,
+	base64UrlToString,
+	buildGlyphUrl,
 	createConnectRequest,
 	createEnvelope,
 	createTransferRequest,
 	handleRedirect,
 	isAllowedCallbackUrl,
 	parseCallbackResponse,
-	sigilRequest,
+	glyphRequest,
 } from "./index";
 
-describe("@sigil-oss/connect", () => {
+function decodeEnvelope(url: string): unknown {
+	const encoded = new URL(url.replace("glyph:", "https:")).searchParams.get("d");
+	if (!encoded) throw new Error("Missing encoded envelope");
+	return JSON.parse(base64UrlToString(encoded));
+}
+
+describe("@glyph-oss/connect", () => {
 	// ── URL building ───────────────────────────────────────────────────────────
 
-	test("builds a Sigil URL with a callback envelope", () => {
+	test("builds a Glyph URL with a callback envelope", () => {
 		const request = createTransferRequest({
 			type: "transfer",
 			dapp: { name: "Demo", origin: "https://demo.app" },
 			to: "UVYAOYTNYCRBVFBHNFIJUEOUEPEDIDUWWEAXKFSJEBJVASCQEROJOVOEEATL",
 			amount: "1000",
 		});
-		const url = buildSigilUrl(
-			createEnvelope(request, { callback: "https://demo.app/callback" }),
-			{ includeLegacyCallbackParam: true },
-		);
-		expect(url.startsWith("sigil://v1/request?d=")).toBe(true);
-		expect(url.includes("&cb=https%3A%2F%2Fdemo.app%2Fcallback")).toBe(true);
+		const url = buildGlyphUrl(createEnvelope(request, { callback: "https://demo.app/callback" }));
+		expect(url.startsWith("glyph://v1/request?d=")).toBe(true);
+		expect(new URL(url.replace("glyph:", "https:")).searchParams.get("cb")).toBeNull();
 	});
 
-	test("builds a Sigil URL with a redirect_uri envelope", () => {
+	test("builds a Glyph URL with a redirect_uri envelope", () => {
 		const request = createConnectRequest({
 			type: "connect",
 			dapp: { name: "Demo", origin: "https://demo.app" },
 		});
-		const url = buildSigilUrl(
-			createEnvelope(request, { redirect_uri: "https://demo.app/__sigil__" }),
+		const url = buildGlyphUrl(
+			createEnvelope(request, { redirect_uri: "https://demo.app/__glyph__" }),
 		);
-		expect(url.startsWith("sigil://v1/request?d=")).toBe(true);
-		const d = new URL(url.replace("sigil:", "https:")).searchParams.get("d");
-		const envelope = JSON.parse(atob(d!.replace(/-/g, "+").replace(/_/g, "/")));
-		expect(envelope.redirect_uri).toBe("https://demo.app/__sigil__");
+		expect(url.startsWith("glyph://v1/request?d=")).toBe(true);
+		const envelope = decodeEnvelope(url) as { redirect_uri?: string };
+		expect(envelope.redirect_uri).toBe("https://demo.app/__glyph__");
 	});
 
 	// ── URL validation ─────────────────────────────────────────────────────────
@@ -48,6 +51,7 @@ describe("@sigil-oss/connect", () => {
 		expect(isAllowedCallbackUrl("https://demo.app/cb")).toBe(true);
 		expect(isAllowedCallbackUrl("http://localhost:3000/cb")).toBe(true);
 		expect(isAllowedCallbackUrl("http://127.0.0.1:3000/cb")).toBe(true);
+		expect(isAllowedCallbackUrl("http://[::1]:3000/cb")).toBe(true);
 		expect(isAllowedCallbackUrl("http://demo.app/cb")).toBe(false);
 	});
 
@@ -65,8 +69,12 @@ describe("@sigil-oss/connect", () => {
 			dapp: { name: "Demo", origin: "https://demo.app" },
 		});
 		expect(() =>
-			createEnvelope(req, { redirect_uri: "http://demo.app/__sigil__" }),
+			createEnvelope(req, { redirect_uri: "http://demo.app/__glyph__" }),
 		).toThrow();
+	});
+
+	test("base64UrlToString rejects malformed base64url input", () => {
+		expect(() => base64UrlToString("not-valid!")).toThrow("Invalid base64url value");
 	});
 
 	// ── Callback parsing ───────────────────────────────────────────────────────
@@ -144,6 +152,33 @@ describe("@sigil-oss/connect", () => {
 		expect(() =>
 			parseCallbackResponse({ status: "unknown", type: "transfer", nonce: "x" }),
 		).toThrow();
+		expect(() =>
+			parseCallbackResponse({
+				status: "signed",
+				type: "unknown",
+				nonce: "x",
+			}),
+		).toThrow("Unknown callback request type");
+	});
+
+	test("parseCallbackResponse throws on malformed permissions and rejection reasons", () => {
+		expect(() =>
+			parseCallbackResponse({
+				status: "connected",
+				type: "connect",
+				nonce: "x",
+				identity: "AAAA",
+				permissions: ["admin"],
+			}),
+		).toThrow("permissions");
+		expect(() =>
+			parseCallbackResponse({
+				status: "rejected",
+				type: "connect",
+				nonce: "x",
+				reason: "expired",
+			}),
+		).toThrow("Unknown rejection reason");
 	});
 
 	test("parseCallbackResponse throws on non-object input", () => {
@@ -155,7 +190,7 @@ describe("@sigil-oss/connect", () => {
 	// ── handleRedirect ─────────────────────────────────────────────────────────
 
 	test("handleRedirect broadcasts result and is a no-op if no ?result= param", () => {
-		// No window in Bun — confirm it returns safely
+		// No window in Bun. Confirm it returns safely.
 		expect(() => handleRedirect()).not.toThrow();
 	});
 
@@ -172,19 +207,17 @@ describe("@sigil-oss/connect", () => {
 			.replace(/\//g, "_")
 			.replace(/=+$/g, "");
 
-		// Simulate browser environment
+		// Simulate browser environment.
 		const received = await new Promise<unknown>((resolve) => {
-			const channel = new BroadcastChannel(`sigil:result:${nonce}`);
-			channel.onmessage = (e) => {
+			const channel = new BroadcastChannel(`glyph:result:${nonce}`);
+			channel.onmessage = (event) => {
 				channel.close();
-				resolve(e.data);
+				resolve(event.data);
 			};
 
-			// Simulate what handleRedirect does internally
-			const parsed = parseCallbackResponse(
-				JSON.parse(atob(encoded.replace(/-/g, "+").replace(/_/g, "/"))),
-			);
-			const bc = new BroadcastChannel(`sigil:result:${parsed.nonce}`);
+			// Simulate what handleRedirect does internally.
+			const parsed = parseCallbackResponse(JSON.parse(base64UrlToString(encoded)));
+			const bc = new BroadcastChannel(`glyph:result:${parsed.nonce}`);
 			bc.postMessage(parsed);
 			bc.close();
 		});
@@ -192,12 +225,12 @@ describe("@sigil-oss/connect", () => {
 		expect((received as { status: string }).status).toBe("rejected");
 	});
 
-	// ── sigilRequest ───────────────────────────────────────────────────────────
+	// ── glyphRequest ───────────────────────────────────────────────────────────
 
-	test("sigilRequest throws outside browser environment", async () => {
-		// Bun doesn't have window — confirms the guard works
+	test("glyphRequest throws outside browser environment", async () => {
+		// Bun doesn't have window. Confirms the guard works.
 		await expect(
-			sigilRequest(
+			glyphRequest(
 				createConnectRequest({
 					type: "connect",
 					dapp: { name: "Demo", origin: "https://demo.app" },

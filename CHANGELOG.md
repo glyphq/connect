@@ -1,35 +1,34 @@
-# @sigil-oss/connect
+# @glyph-oss/connect
 
 ## 1.0.0
 
 ### Major Changes
 
-- 15faeb7: Remove proof/signing system and add async `sigilRequest()` API
+- 15faeb7: Remove proof/signing system and add async `glyphRequest()` API
 
-  **Breaking:** `SigilProof`, `SigilProofOptions`, `signEnvelope`, `verifyEnvelopeSignature`, `serializeSignedRequestPayload`, `hashSignedRequestPayload` are all removed. The `proof` field is gone from `SigilEnvelope`.
+  **Breaking:** proof types, envelope signing helpers, signed payload serialization helpers, and the `proof` field are removed from `GlyphEnvelope`.
 
-  **New:** `sigilRequest(req, options?)` — launches Sigil via a link click and returns a `Promise<SigilCallbackResponse>` backed by `BroadcastChannel`. No server, no polling.
+  **New:** `glyphRequest(req, options?)` launches Glyph via a link click and returns a `Promise<GlyphCallbackResponse>` backed by `BroadcastChannel`. No server and no polling are required for the browser promise flow.
 
-  **New:** `handleRedirect()` — call at your `callbackPath` route (default `/__sigil__`); reads `?result=`, broadcasts to the waiting Promise, closes the tab.
+  **New:** `handleRedirect()` reads `?result=` at the callback route, broadcasts to the waiting Promise, and closes the tab. The default callback route is `/__glyph__`.
 
-  **New:** `redirect_uri` field on `SigilEnvelope` and `createEnvelope` options — Sigil opens the browser to this URL with the result as a `?result=` query param after the user acts.
+  **New:** `redirect_uri` on `GlyphEnvelope` and `createEnvelope` options lets Glyph open the browser with `?result=` after the user acts.
 
 ## 0.3.0
 
 ### Minor Changes
 
-- de27362: Add callback response parsing, signature verification, and browser launch fix
+- de27362: Add callback response parsing and browser launch fixes
 
-  - `parseCallbackResponse(body)` — parse and type-narrow the five Sigil callback response shapes (signed transfer, signed message, connected, verified, rejected); throws on unknown or malformed payloads
-  - `verifyEnvelopeSignature(envelope, options?)` — verify an ES256 signed envelope using the embedded `public_jwk` or a caller-supplied key; returns `false` for proof-less envelopes
-  - Fix `openSigilUrl` to use an anchor-click instead of `window.location.assign`, which allows the `sigil://` protocol handler to be triggered without navigating the current page
-  - Export new callback response types: `SigilSignedTransferCallback`, `SigilSignedMessageCallback`, `SigilConnectedCallback`, `SigilVerifiedCallback`, `SigilRejectedCallback`, `SigilCallbackResponse`
+  - `parseCallbackResponse(body)` parses and type-narrows the five Glyph callback response shapes: signed transfer, signed message, connected, verified, and rejected.
+  - Browser launch uses an anchor click so the `glyph://` protocol handler can be triggered without navigating the current page.
+  - Export callback response types: `GlyphSignedTransferCallback`, `GlyphSignedMessageCallback`, `GlyphConnectedCallback`, `GlyphVerifiedCallback`, `GlyphRejectedCallback`, `GlyphCallbackResponse`.
 
 ## 0.2.0
 
 ### Minor Changes
 
-- 2ee6687: Initial release scaffold for the Sigil Connect SDK, including typed deep-link request builders, envelope signing helpers, tests, and Changesets-based publish automation.
+- 2ee6687: Initial release scaffold for the Glyph Connect SDK, including typed deep-link request builders, envelope helpers, tests, and Changesets-based publish automation.
 
 All notable changes to this package will be documented in this file.
 

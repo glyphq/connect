@@ -1,25 +1,30 @@
-export type SigilPermission = "transfer" | "sc_call" | "sign_message";
-export type SigilRequestType =
+export const GLYPH_DEEP_LINK_SCHEME = "glyph";
+export const GLYPH_DEEP_LINK_PREFIX = `${GLYPH_DEEP_LINK_SCHEME}://v1/request`;
+export const GLYPH_RESULT_CHANNEL_PREFIX = "glyph:result:";
+export const DEFAULT_GLYPH_CALLBACK_PATH = "/__glyph__";
+
+export type GlyphPermission = "transfer" | "sc_call" | "sign_message";
+export type GlyphRequestType =
 	| "transfer"
 	| "sc_call"
 	| "sign_message"
 	| "verify_message"
 	| "connect";
 
-export interface SigilDappMeta {
+export interface GlyphDappMeta {
 	name?: string;
 	origin: string;
 	icon?: string;
 }
 
-export interface SigilBaseRequest {
-	type: SigilRequestType;
-	dapp: SigilDappMeta;
+export interface GlyphBaseRequest {
+	type: GlyphRequestType;
+	dapp: GlyphDappMeta;
 	nonce: string;
 	exp?: number;
 }
 
-export interface SigilTransferRequest extends SigilBaseRequest {
+export interface GlyphTransferRequest extends GlyphBaseRequest {
 	type: "transfer";
 	to: string;
 	amount: string | number;
@@ -27,7 +32,7 @@ export interface SigilTransferRequest extends SigilBaseRequest {
 	tick_offset?: number;
 }
 
-export interface SigilScCallRequest extends SigilBaseRequest {
+export interface GlyphScCallRequest extends GlyphBaseRequest {
 	type: "sc_call";
 	contract_index: number;
 	input_type: number;
@@ -37,14 +42,14 @@ export interface SigilScCallRequest extends SigilBaseRequest {
 	tick_offset?: number;
 }
 
-export interface SigilSignMessageRequest extends SigilBaseRequest {
+export interface GlyphSignMessageRequest extends GlyphBaseRequest {
 	type: "sign_message";
 	message: string;
 	from?: string;
 	data?: string;
 }
 
-export interface SigilVerifyMessageRequest extends SigilBaseRequest {
+export interface GlyphVerifyMessageRequest extends GlyphBaseRequest {
 	type: "verify_message";
 	message: string;
 	data?: string;
@@ -52,27 +57,27 @@ export interface SigilVerifyMessageRequest extends SigilBaseRequest {
 	public_key: string;
 }
 
-export interface SigilConnectRequest extends SigilBaseRequest {
+export interface GlyphConnectRequest extends GlyphBaseRequest {
 	type: "connect";
-	permissions?: SigilPermission[];
+	permissions?: GlyphPermission[];
 }
 
-export type SigilRequest =
-	| SigilTransferRequest
-	| SigilScCallRequest
-	| SigilSignMessageRequest
-	| SigilVerifyMessageRequest
-	| SigilConnectRequest;
+export type GlyphRequest =
+	| GlyphTransferRequest
+	| GlyphScCallRequest
+	| GlyphSignMessageRequest
+	| GlyphVerifyMessageRequest
+	| GlyphConnectRequest;
 
-export interface SigilEnvelope {
-	request: SigilRequest;
+export interface GlyphEnvelope {
+	request: GlyphRequest;
 	callback?: string | null;
 	redirect_uri?: string | null;
 }
 
 // ── Callback response types ────────────────────────────────────────────────────
 
-export interface SigilSignedTransferCallback {
+export interface GlyphSignedTransferCallback {
 	status: "signed";
 	type: "transfer" | "sc_call";
 	nonce: string;
@@ -81,7 +86,7 @@ export interface SigilSignedTransferCallback {
 	target_tick: number;
 }
 
-export interface SigilSignedMessageCallback {
+export interface GlyphSignedMessageCallback {
 	status: "signed";
 	type: "sign_message";
 	nonce: string;
@@ -90,15 +95,15 @@ export interface SigilSignedMessageCallback {
 	public_key: string;
 }
 
-export interface SigilConnectedCallback {
+export interface GlyphConnectedCallback {
 	status: "connected";
 	type: "connect";
 	nonce: string;
 	identity: string;
-	permissions: SigilPermission[];
+	permissions: GlyphPermission[];
 }
 
-export interface SigilVerifiedCallback {
+export interface GlyphVerifiedCallback {
 	status: "verified";
 	type: "verify_message";
 	nonce: string;
@@ -106,32 +111,28 @@ export interface SigilVerifiedCallback {
 	identity: string;
 }
 
-export interface SigilRejectedCallback {
+export interface GlyphRejectedCallback {
 	status: "rejected";
-	type: SigilRequestType;
+	type: GlyphRequestType;
 	nonce: string;
 	reason: "user_rejected";
 }
 
-export type SigilCallbackResponse =
-	| SigilSignedTransferCallback
-	| SigilSignedMessageCallback
-	| SigilConnectedCallback
-	| SigilVerifiedCallback
-	| SigilRejectedCallback;
+export type GlyphCallbackResponse =
+	| GlyphSignedTransferCallback
+	| GlyphSignedMessageCallback
+	| GlyphConnectedCallback
+	| GlyphVerifiedCallback
+	| GlyphRejectedCallback;
 
-export interface SigilUrlOptions {
-	includeLegacyCallbackParam?: boolean;
-}
-
-export interface SigilRequestDefaults {
+export interface GlyphRequestDefaults {
 	nonce?: string;
 	exp?: number;
 	ttlSeconds?: number;
 }
 
-export interface SigilAsyncOptions {
-	/** Path on your origin where handleRedirect() is mounted. Defaults to '/__sigil__'. */
+export interface GlyphAsyncOptions {
+	/** Path on your origin where handleRedirect() is mounted. Defaults to '/__glyph__'. */
 	callbackPath?: string;
 	/** Timeout in ms before the Promise rejects. Defaults to 300 000 (5 min). */
 	timeoutMs?: number;
@@ -139,7 +140,15 @@ export interface SigilAsyncOptions {
 
 const DEFAULT_EXPIRY_SECONDS = 300;
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
-const CHANNEL_PREFIX = "sigil:result:";
+const LOCAL_CALLBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const GLYPH_PERMISSIONS = new Set<GlyphPermission>(["transfer", "sc_call", "sign_message"]);
+const GLYPH_REQUEST_TYPES = new Set<GlyphRequestType>([
+	"transfer",
+	"sc_call",
+	"sign_message",
+	"verify_message",
+	"connect",
+]);
 
 // ── Encoding helpers ───────────────────────────────────────────────────────────
 
@@ -157,6 +166,9 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 }
 
 function base64UrlToBytes(value: string): Uint8Array {
+	if (!/^[A-Za-z0-9_-]*$/.test(value)) {
+		throw new Error("Invalid base64url value");
+	}
 	const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
 	const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
 	if (typeof Buffer !== "undefined") {
@@ -190,11 +202,45 @@ function assertValidDappOrigin(origin: string): void {
 	}
 }
 
+function assertAllowedCallbackUrl(value: string, fieldName: "callback" | "redirect_uri"): void {
+	if (!isAllowedCallbackUrl(value)) {
+		throw new Error(`${fieldName} must use HTTPS or localhost HTTP`);
+	}
+}
+
+function isGlyphPermission(value: unknown): value is GlyphPermission {
+	return typeof value === "string" && GLYPH_PERMISSIONS.has(value as GlyphPermission);
+}
+
+function isGlyphRequestType(value: unknown): value is GlyphRequestType {
+	return typeof value === "string" && GLYPH_REQUEST_TYPES.has(value as GlyphRequestType);
+}
+
+function readString(raw: Record<string, unknown>, field: string): string {
+	const value = raw[field];
+	if (typeof value !== "string") throw new Error(`Missing or invalid '${field}'`);
+	return value;
+}
+
+function readNumber(raw: Record<string, unknown>, field: string): number {
+	const value = raw[field];
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		throw new Error(`Missing or invalid '${field}'`);
+	}
+	return value;
+}
+
+function readBoolean(raw: Record<string, unknown>, field: string): boolean {
+	const value = raw[field];
+	if (typeof value !== "boolean") throw new Error(`Missing or invalid '${field}'`);
+	return value;
+}
+
 export function isAllowedCallbackUrl(value: string): boolean {
 	try {
 		const url = new URL(value);
 		const host = url.hostname.toLowerCase();
-		const isLocal = host === "localhost" || host === "127.0.0.1";
+		const isLocal = LOCAL_CALLBACK_HOSTS.has(host);
 		return url.protocol === "https:" || (url.protocol === "http:" && isLocal);
 	} catch {
 		return false;
@@ -208,7 +254,16 @@ function unixNow(): number {
 }
 
 export function createNonce(): string {
-	return globalThis.crypto.randomUUID().replace(/-/g, "");
+	const crypto = globalThis.crypto;
+	if (typeof crypto?.randomUUID === "function") {
+		return crypto.randomUUID().replace(/-/g, "");
+	}
+	if (typeof crypto?.getRandomValues === "function") {
+		const bytes = new Uint8Array(16);
+		crypto.getRandomValues(bytes);
+		return bytesToBase64Url(bytes);
+	}
+	throw new Error("crypto.randomUUID or crypto.getRandomValues is required to create a nonce");
 }
 
 export function createExpiry(ttlSeconds = DEFAULT_EXPIRY_SECONDS): number {
@@ -218,10 +273,10 @@ export function createExpiry(ttlSeconds = DEFAULT_EXPIRY_SECONDS): number {
 	return unixNow() + Math.floor(ttlSeconds);
 }
 
-export function withRequestDefaults<T extends Omit<SigilRequest, "nonce" | "exp">>(
+export function withRequestDefaults<T extends Omit<GlyphRequest, "nonce" | "exp">>(
 	request: T,
-	defaults: SigilRequestDefaults = {},
-): T & Pick<SigilBaseRequest, "nonce" | "exp"> {
+	defaults: GlyphRequestDefaults = {},
+): T & Pick<GlyphBaseRequest, "nonce" | "exp"> {
 	assertValidDappOrigin(request.dapp.origin);
 	return {
 		...request,
@@ -233,52 +288,48 @@ export function withRequestDefaults<T extends Omit<SigilRequest, "nonce" | "exp"
 // ── Request factories ──────────────────────────────────────────────────────────
 
 export function createTransferRequest(
-	request: Omit<SigilTransferRequest, "nonce" | "exp">,
-	defaults?: SigilRequestDefaults,
-): SigilTransferRequest {
+	request: Omit<GlyphTransferRequest, "nonce" | "exp">,
+	defaults?: GlyphRequestDefaults,
+): GlyphTransferRequest {
 	return withRequestDefaults(request, defaults);
 }
 
 export function createScCallRequest(
-	request: Omit<SigilScCallRequest, "nonce" | "exp">,
-	defaults?: SigilRequestDefaults,
-): SigilScCallRequest {
+	request: Omit<GlyphScCallRequest, "nonce" | "exp">,
+	defaults?: GlyphRequestDefaults,
+): GlyphScCallRequest {
 	return withRequestDefaults(request, defaults);
 }
 
 export function createSignMessageRequest(
-	request: Omit<SigilSignMessageRequest, "nonce" | "exp">,
-	defaults?: SigilRequestDefaults,
-): SigilSignMessageRequest {
+	request: Omit<GlyphSignMessageRequest, "nonce" | "exp">,
+	defaults?: GlyphRequestDefaults,
+): GlyphSignMessageRequest {
 	return withRequestDefaults(request, defaults);
 }
 
 export function createVerifyMessageRequest(
-	request: Omit<SigilVerifyMessageRequest, "nonce" | "exp">,
-	defaults?: SigilRequestDefaults,
-): SigilVerifyMessageRequest {
+	request: Omit<GlyphVerifyMessageRequest, "nonce" | "exp">,
+	defaults?: GlyphRequestDefaults,
+): GlyphVerifyMessageRequest {
 	return withRequestDefaults(request, defaults);
 }
 
 export function createConnectRequest(
-	request: Omit<SigilConnectRequest, "nonce" | "exp">,
-	defaults?: SigilRequestDefaults,
-): SigilConnectRequest {
+	request: Omit<GlyphConnectRequest, "nonce" | "exp">,
+	defaults?: GlyphRequestDefaults,
+): GlyphConnectRequest {
 	return withRequestDefaults(request, defaults);
 }
 
 // ── Envelope ───────────────────────────────────────────────────────────────────
 
 export function createEnvelope(
-	request: SigilRequest,
+	request: GlyphRequest,
 	options: { callback?: string | null; redirect_uri?: string | null } = {},
-): SigilEnvelope {
-	if (options.callback && !isAllowedCallbackUrl(options.callback)) {
-		throw new Error("callback must use HTTPS or localhost HTTP");
-	}
-	if (options.redirect_uri && !isAllowedCallbackUrl(options.redirect_uri)) {
-		throw new Error("redirect_uri must use HTTPS or localhost HTTP");
-	}
+): GlyphEnvelope {
+	if (options.callback) assertAllowedCallbackUrl(options.callback, "callback");
+	if (options.redirect_uri) assertAllowedCallbackUrl(options.redirect_uri, "redirect_uri");
 	return {
 		request,
 		callback: options.callback ?? null,
@@ -286,30 +337,23 @@ export function createEnvelope(
 	};
 }
 
-export function encodeEnvelope(envelope: SigilEnvelope): string {
-	if (envelope.callback && !isAllowedCallbackUrl(envelope.callback)) {
-		throw new Error("callback must use HTTPS or localhost HTTP");
-	}
-	if (envelope.redirect_uri && !isAllowedCallbackUrl(envelope.redirect_uri)) {
-		throw new Error("redirect_uri must use HTTPS or localhost HTTP");
-	}
+export function encodeEnvelope(envelope: GlyphEnvelope): string {
+	if (envelope.callback) assertAllowedCallbackUrl(envelope.callback, "callback");
+	if (envelope.redirect_uri) assertAllowedCallbackUrl(envelope.redirect_uri, "redirect_uri");
 	return stringToBase64Url(JSON.stringify(envelope));
 }
 
-export function buildSigilUrl(envelope: SigilEnvelope, options: SigilUrlOptions = {}): string {
+export function buildGlyphUrl(envelope: GlyphEnvelope): string {
 	const payload = encodeEnvelope(envelope);
 	const params = new URLSearchParams({ d: payload });
-	if (options.includeLegacyCallbackParam && envelope.callback) {
-		params.set("cb", envelope.callback);
-	}
-	return `sigil://v1/request?${params.toString()}`;
+	return `${GLYPH_DEEP_LINK_PREFIX}?${params.toString()}`;
 }
 
 // ── Browser launch ─────────────────────────────────────────────────────────────
 
-export function openSigilUrl(url: string): void {
+export function openGlyphUrl(url: string): void {
 	if (typeof window === "undefined") {
-		throw new Error("openSigilUrl can only be used in a browser environment");
+		throw new Error("openGlyphUrl can only be used in a browser environment");
 	}
 	const a = document.createElement("a");
 	a.href = url;
@@ -319,53 +363,60 @@ export function openSigilUrl(url: string): void {
 	document.body.removeChild(a);
 }
 
-export function launchSigilRequest(envelope: SigilEnvelope, options?: SigilUrlOptions): string {
-	const url = buildSigilUrl(envelope, options);
-	openSigilUrl(url);
+export function launchGlyphRequest(envelope: GlyphEnvelope): string {
+	const url = buildGlyphUrl(envelope);
+	openGlyphUrl(url);
 	return url;
 }
 
 // ── Async request API ──────────────────────────────────────────────────────────
 
 /**
- * Launch a Sigil request and await the result as a Promise.
+ * Launch a Glyph request and await the result as a Promise.
  *
- * Opens Sigil via a link click (the page stays alive). After the user acts,
- * Sigil opens `redirect_uri?result=<base64url JSON>` in the browser. The page
+ * Opens Glyph via a link click (the page stays alive). After the user acts,
+ * Glyph opens `redirect_uri?result=<base64url JSON>` in the browser. The page
  * at that path must call `handleRedirect()` — it broadcasts the result over a
  * BroadcastChannel and this Promise resolves.
  *
  * @example
  * // In your main app:
- * const result = await sigilRequest(createTransferRequest({...}));
+ * const result = await glyphRequest(createTransferRequest({...}));
  *
- * // At your callbackPath route (defaults to /__sigil__):
- * import { handleRedirect } from '@sigil-oss/connect';
+ * // At your callbackPath route (defaults to /__glyph__):
+ * import { handleRedirect } from '@glyph-oss/connect';
  * handleRedirect();
  */
-export async function sigilRequest(
-	req: SigilRequest,
-	options: SigilAsyncOptions = {},
-): Promise<SigilCallbackResponse> {
+export async function glyphRequest(
+	req: GlyphRequest,
+	options: GlyphAsyncOptions = {},
+): Promise<GlyphCallbackResponse> {
 	if (typeof window === "undefined") {
-		throw new Error("sigilRequest() can only be used in a browser environment");
+		throw new Error("glyphRequest() can only be used in a browser environment");
 	}
-	const callbackPath = options.callbackPath ?? "/__sigil__";
+	const callbackPath = options.callbackPath ?? DEFAULT_GLYPH_CALLBACK_PATH;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const redirectUri = `${window.location.origin}${callbackPath}`;
 	const envelope = createEnvelope(req, { redirect_uri: redirectUri });
-	const url = buildSigilUrl(envelope);
+	const url = buildGlyphUrl(envelope);
 
-	return new Promise<SigilCallbackResponse>((resolve, reject) => {
-		const channel = new BroadcastChannel(`${CHANNEL_PREFIX}${req.nonce}`);
-		const timer = setTimeout(() => {
+	return new Promise<GlyphCallbackResponse>((resolve, reject) => {
+		const channel = new BroadcastChannel(`${GLYPH_RESULT_CHANNEL_PREFIX}${req.nonce}`);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const cleanup = () => {
+			if (timer) clearTimeout(timer);
 			channel.close();
-			reject(new Error("Sigil request timed out"));
+		};
+		const fail = (error: unknown) => {
+			cleanup();
+			reject(error);
+		};
+		timer = setTimeout(() => {
+			fail(new Error("Glyph request timed out"));
 		}, timeoutMs);
 
 		channel.onmessage = (e: MessageEvent) => {
-			clearTimeout(timer);
-			channel.close();
+			cleanup();
 			try {
 				resolve(parseCallbackResponse(e.data));
 			} catch (err) {
@@ -373,18 +424,22 @@ export async function sigilRequest(
 			}
 		};
 
-		openSigilUrl(url);
+		try {
+			openGlyphUrl(url);
+		} catch (err) {
+			fail(err);
+		}
 	});
 }
 
 /**
- * Call this at the route/page pointed to by your `callbackPath` (default `/__sigil__`).
- * Reads the `?result=` query param, broadcasts it to the waiting `sigilRequest()` Promise,
+ * Call this at the route/page pointed to by your `callbackPath` (default `/__glyph__`).
+ * Reads the `?result=` query param, broadcasts it to the waiting `glyphRequest()` Promise,
  * then closes the tab.
  *
  * @example
- * // pages/__sigil__.tsx  (or equivalent in your framework)
- * import { handleRedirect } from '@sigil-oss/connect';
+ * // pages/__glyph__.tsx  (or equivalent in your framework)
+ * import { handleRedirect } from '@glyph-oss/connect';
  * handleRedirect();
  */
 export function handleRedirect(): void {
@@ -394,74 +449,82 @@ export function handleRedirect(): void {
 	try {
 		const raw = JSON.parse(base64UrlToString(encoded)) as unknown;
 		const result = parseCallbackResponse(raw);
-		const channel = new BroadcastChannel(`${CHANNEL_PREFIX}${result.nonce}`);
+		const channel = new BroadcastChannel(`${GLYPH_RESULT_CHANNEL_PREFIX}${result.nonce}`);
 		channel.postMessage(result);
 		channel.close();
 		window.close();
 	} catch {
-		// silently fail — page stays open so the user isn't left with a blank tab
+		// Silently fail. The page stays open instead of leaving the user with a blank tab.
 	}
 }
 
 // ── Callback parsing ───────────────────────────────────────────────────────────
 
-export function parseCallbackResponse(body: unknown): SigilCallbackResponse {
+export function parseCallbackResponse(body: unknown): GlyphCallbackResponse {
 	if (!body || typeof body !== "object" || Array.isArray(body)) {
 		throw new Error("Callback body must be a JSON object");
 	}
 	const raw = body as Record<string, unknown>;
-	const status = raw["status"];
-	const nonce = raw["nonce"];
-	const type = raw["type"];
+	const status = readString(raw, "status");
+	const nonce = readString(raw, "nonce");
+	const type = readString(raw, "type");
 
-	if (typeof status !== "string") throw new Error("Missing or invalid 'status'");
-	if (typeof nonce !== "string") throw new Error("Missing or invalid 'nonce'");
-	if (typeof type !== "string") throw new Error("Missing or invalid 'type'");
+	if (!isGlyphRequestType(type)) {
+		throw new Error(`Unknown callback request type: "${type}"`);
+	}
 
 	if (status === "rejected") {
-		return { status: "rejected", type: type as SigilRequestType, nonce, reason: "user_rejected" };
+		const reason = readString(raw, "reason");
+		if (reason !== "user_rejected") {
+			throw new Error(`Unknown rejection reason: "${reason}"`);
+		}
+		return { status: "rejected", type, nonce, reason: "user_rejected" };
 	}
 
 	if (status === "signed" && (type === "transfer" || type === "sc_call")) {
-		const identity = raw["identity"];
-		const tx_hash = raw["tx_hash"];
-		const target_tick = raw["target_tick"];
-		if (typeof identity !== "string") throw new Error("Missing 'identity'");
-		if (typeof tx_hash !== "string") throw new Error("Missing 'tx_hash'");
-		if (typeof target_tick !== "number") throw new Error("Missing 'target_tick'");
-		return { status: "signed", type, nonce, identity, tx_hash, target_tick };
+		return {
+			status: "signed",
+			type,
+			nonce,
+			identity: readString(raw, "identity"),
+			tx_hash: readString(raw, "tx_hash"),
+			target_tick: readNumber(raw, "target_tick"),
+		};
 	}
 
 	if (status === "signed" && type === "sign_message") {
-		const identity = raw["identity"];
-		const signature = raw["signature"];
-		const public_key = raw["public_key"];
-		if (typeof identity !== "string") throw new Error("Missing 'identity'");
-		if (typeof signature !== "string") throw new Error("Missing 'signature'");
-		if (typeof public_key !== "string") throw new Error("Missing 'public_key'");
-		return { status: "signed", type: "sign_message", nonce, identity, signature, public_key };
+		return {
+			status: "signed",
+			type: "sign_message",
+			nonce,
+			identity: readString(raw, "identity"),
+			signature: readString(raw, "signature"),
+			public_key: readString(raw, "public_key"),
+		};
 	}
 
 	if (status === "connected" && type === "connect") {
-		const identity = raw["identity"];
 		const permissions = raw["permissions"];
-		if (typeof identity !== "string") throw new Error("Missing 'identity'");
-		if (!Array.isArray(permissions)) throw new Error("Missing or invalid 'permissions'");
+		if (!Array.isArray(permissions) || !permissions.every(isGlyphPermission)) {
+			throw new Error("Missing or invalid 'permissions'");
+		}
 		return {
 			status: "connected",
 			type: "connect",
 			nonce,
-			identity,
-			permissions: permissions as SigilPermission[],
+			identity: readString(raw, "identity"),
+			permissions,
 		};
 	}
 
 	if (status === "verified" && type === "verify_message") {
-		const valid = raw["valid"];
-		const identity = raw["identity"];
-		if (typeof valid !== "boolean") throw new Error("Missing or invalid 'valid'");
-		if (typeof identity !== "string") throw new Error("Missing 'identity'");
-		return { status: "verified", type: "verify_message", nonce, valid, identity };
+		return {
+			status: "verified",
+			type: "verify_message",
+			nonce,
+			valid: readBoolean(raw, "valid"),
+			identity: readString(raw, "identity"),
+		};
 	}
 
 	throw new Error(`Unknown callback status/type: "${status}"/"${type}"`);
