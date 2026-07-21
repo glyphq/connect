@@ -123,13 +123,25 @@ const result = await glyphRequest(
     dapp: { name: "My App", origin: "https://my.app" },
     permissions: ["transfer", "sign_message"],
   }),
+  {
+    onStatus(status) {
+      if (status.state === "awaiting_approval") {
+        showMessage("Continue in Glyph Wallet");
+      }
+    },
+  },
 );
 
 // On your /__glyph__ route:
-handleRedirect();
+handleRedirect({
+  closeDelayMs: 1200,
+  onResult() {
+    showMessage("Request completed. Returning to the application.");
+  },
+});
 ```
 
-`glyphRequest()` opens Glyph, waits on `BroadcastChannel`, and resolves when the callback route broadcasts the `result` query parameter.
+`glyphRequest()` opens Glyph, reports transport-level progress, waits on `BroadcastChannel`, and resolves when the callback route broadcasts the `result` query parameter. The originating page attempts to regain focus when the browser permits it.
 
 ## API Reference
 

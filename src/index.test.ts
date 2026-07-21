@@ -225,6 +225,56 @@ describe("@glyph-oss/connect", () => {
 		expect((received as { status: string }).status).toBe("rejected");
 	});
 
+	test("handleRedirect reports completion and delays closing the callback window", async () => {
+		const nonce = "intentionalCallback123";
+		const result = {
+			status: "connected",
+			type: "connect",
+			nonce,
+			identity: "AAAA",
+			permissions: ["transfer"],
+		};
+		const encoded = btoa(JSON.stringify(result))
+			.replace(/\+/g, "-")
+			.replace(/\//g, "_")
+			.replace(/=+$/g, "");
+		let closeDelay = -1;
+		let focused = false;
+		let deliveredStatus = "";
+		const originalWindow = globalThis.window;
+
+		Object.defineProperty(globalThis, "window", {
+			configurable: true,
+			value: {
+				location: { search: `?result=${encoded}` },
+				opener: { closed: false, focus: () => { focused = true; } },
+				setTimeout: (callback: () => void, delay: number) => {
+					closeDelay = delay;
+					callback();
+					return 1;
+				},
+				close: () => undefined,
+			},
+		});
+
+		try {
+			const outcome = handleRedirect({
+				closeDelayMs: 1200,
+				onResult: (delivered) => { deliveredStatus = delivered.status; },
+			});
+			expect(outcome.status).toBe("handled");
+			expect(deliveredStatus).toBe("connected");
+			expect(closeDelay).toBe(1200);
+			expect(focused).toBe(true);
+		} finally {
+			if (originalWindow) {
+				Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+			} else {
+				Reflect.deleteProperty(globalThis, "window");
+			}
+		}
+	});
+
 	// ── glyphRequest ───────────────────────────────────────────────────────────
 
 	test("glyphRequest throws outside browser environment", async () => {

@@ -136,7 +136,35 @@ export interface GlyphAsyncOptions {
 	callbackPath?: string;
 	/** Timeout in ms before the Promise rejects. Defaults to 300 000 (5 min). */
 	timeoutMs?: number;
+	/** Attempt to focus the originating dApp when a result arrives. Defaults to true. */
+	focusOnResult?: boolean;
+	/** Receives transport-level progress for rendering request feedback. */
+	onStatus?: (status: GlyphRequestStatus) => void;
 }
+
+export type GlyphRequestStatus =
+	| { state: "opening_wallet" }
+	| { state: "awaiting_approval" }
+	| { state: "completed"; result: GlyphCallbackResponse }
+	| { state: "failed"; error: Error };
+
+export interface GlyphRedirectOptions {
+	/** Delay before attempting to close the callback tab. Defaults to 0. */
+	closeDelayMs?: number;
+	/** Attempt to close the callback tab after delivery. Defaults to true. */
+	closeWindow?: boolean;
+	/** Attempt to focus window.opener when one is available. Defaults to true. */
+	focusOpener?: boolean;
+	/** Called after a valid result has been broadcast. */
+	onResult?: (result: GlyphCallbackResponse) => void;
+	/** Called when the result query parameter cannot be parsed. */
+	onError?: (error: Error) => void;
+}
+
+export type GlyphRedirectResult =
+	| { status: "handled"; result: GlyphCallbackResponse }
+	| { status: "missing" }
+	| { status: "invalid"; error: Error };
 
 const DEFAULT_EXPIRY_SECONDS = 300;
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -376,7 +404,7 @@ export function launchGlyphRequest(envelope: GlyphEnvelope): string {
  *
  * Opens Glyph via a link click (the page stays alive). After the user acts,
  * Glyph opens `redirect_uri?result=<base64url JSON>` in the browser. The page
- * at that path must call `handleRedirect()` — it broadcasts the result over a
+ * at that path must call `handleRedirect()`. It broadcasts the result over a
  * BroadcastChannel and this Promise resolves.
  *
  * @example
@@ -396,6 +424,7 @@ export async function glyphRequest(
 	}
 	const callbackPath = options.callbackPath ?? DEFAULT_GLYPH_CALLBACK_PATH;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const focusOnResult = options.focusOnResult ?? true;
 	const redirectUri = `${window.location.origin}${callbackPath}`;
 	const envelope = createEnvelope(req, { redirect_uri: redirectUri });
 	const url = buildGlyphUrl(envelope);
@@ -409,7 +438,9 @@ export async function glyphRequest(
 		};
 		const fail = (error: unknown) => {
 			cleanup();
-			reject(error);
+			const normalizedError = error instanceof Error ? error : new Error(String(error));
+			options.onStatus?.({ state: "failed", error: normalizedError });
+			reject(normalizedError);
 		};
 		timer = setTimeout(() => {
 			fail(new Error("Glyph request timed out"));
@@ -418,14 +449,19 @@ export async function glyphRequest(
 		channel.onmessage = (e: MessageEvent) => {
 			cleanup();
 			try {
-				resolve(parseCallbackResponse(e.data));
+				const result = parseCallbackResponse(e.data);
+				if (focusOnResult) window.focus();
+				options.onStatus?.({ state: "completed", result });
+				resolve(result);
 			} catch (err) {
-				reject(err);
+				fail(err);
 			}
 		};
 
 		try {
+			options.onStatus?.({ state: "opening_wallet" });
 			openGlyphUrl(url);
+			options.onStatus?.({ state: "awaiting_approval" });
 		} catch (err) {
 			fail(err);
 		}
@@ -442,19 +478,28 @@ export async function glyphRequest(
  * import { handleRedirect } from '@glyph-oss/connect';
  * handleRedirect();
  */
-export function handleRedirect(): void {
-	if (typeof window === "undefined") return;
+export function handleRedirect(options: GlyphRedirectOptions = {}): GlyphRedirectResult {
+	if (typeof window === "undefined") return { status: "missing" };
 	const encoded = new URLSearchParams(window.location.search).get("result");
-	if (!encoded) return;
+	if (!encoded) return { status: "missing" };
 	try {
 		const raw = JSON.parse(base64UrlToString(encoded)) as unknown;
 		const result = parseCallbackResponse(raw);
 		const channel = new BroadcastChannel(`${GLYPH_RESULT_CHANNEL_PREFIX}${result.nonce}`);
 		channel.postMessage(result);
 		channel.close();
-		window.close();
-	} catch {
-		// Silently fail. The page stays open instead of leaving the user with a blank tab.
+		if ((options.focusOpener ?? true) && window.opener && !window.opener.closed) {
+			window.opener.focus();
+		}
+		options.onResult?.(result);
+		if (options.closeWindow ?? true) {
+			window.setTimeout(() => window.close(), Math.max(0, options.closeDelayMs ?? 0));
+		}
+		return { status: "handled", result };
+	} catch (cause) {
+		const error = cause instanceof Error ? cause : new Error("Invalid Glyph callback result");
+		options.onError?.(error);
+		return { status: "invalid", error };
 	}
 }
 
