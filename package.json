@@ -1,6 +1,6 @@
 {
   "name": "@glyph-oss/connect",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Framework-agnostic TypeScript SDK for launching and signing Glyph deep-link requests.",
   "type": "module",
   "license": "MIT",
