@@ -87,6 +87,7 @@ Glyph delivers results to your app via one or both modes:
 |---|---|
 | `callback` | Glyph POSTs a JSON result to your server after the user acts |
 | `redirect_uri` | Glyph opens `redirect_uri?result=<base64url>` in the browser |
+| relay | dApp streams the result via the [Glyph relay](https://github.com/glyphq/relay) (no server needed) |
 
 Parse the callback body on your server:
 
@@ -143,6 +144,54 @@ handleRedirect({
 
 `glyphRequest()` opens Glyph, reports transport-level progress, waits on `BroadcastChannel`, and resolves when the callback route broadcasts the `result` query parameter. The originating page attempts to regain focus when the browser permits it.
 
+## Relay Stream (no server required)
+
+When your dApp has no backend, use the [Glyph relay](https://github.com/glyphq/relay) to receive results via SSE. The relay is a Cloudflare Worker with Durable Objects that bridges the wallet's callback POST to a streaming response.
+
+```
+dApp ──── glyph:// deep link ──────→ wallet (Tauri)
+dApp ←── SSE /v1/stream/:nonce ──── relay ←── POST /v1/callback/:nonce ── wallet
+```
+
+```ts
+import {
+  createTransferRequest,
+  createEnvelope,
+  launchGlyphRequest,
+  subscribeViaRelay,
+  relayCallbackUrl,
+  createNonce,
+} from "@glyph-oss/connect";
+
+const nonce = createNonce();
+const request = createTransferRequest({
+  type: "transfer",
+  dapp: { name: "My App", origin: "https://my.app" },
+  to: "UVYAOYTNYCRBVFBHNFIJUEOUEPEDIDUWWEAXKFSJEBJVASCQEROJOVOEEATL",
+  amount: "1000",
+});
+
+// Point the callback to the relay
+const envelope = createEnvelope(request, {
+  callback: relayCallbackUrl(nonce),
+});
+
+// Connect to the relay stream, then launch
+const resultPromise = subscribeViaRelay(nonce, {
+  onStatus(status) {
+    if (status.state === "awaiting_approval") {
+      showMessage("Continue in Glyph Wallet");
+    }
+  },
+});
+
+launchGlyphRequest(envelope);
+
+const result = await resultPromise;
+```
+
+`subscribeViaRelay()` uses `fetch` with streaming (no `EventSource` dependency), so it works in browsers, Node 18+, Bun, Deno, and service workers.
+
 ## API Reference
 
 **URL and envelope**
@@ -150,6 +199,9 @@ handleRedirect({
 
 **Request builders**
 `createTransferRequest` · `createScCallRequest` · `createSignMessageRequest` · `createVerifyMessageRequest` · `createConnectRequest`
+
+**Relay client**
+`subscribeViaRelay` · `relayCallbackUrl`
 
 **Utilities**
 `createNonce` · `createExpiry` · `withRequestDefaults` · `isAllowedCallbackUrl` · `base64UrlToString` · `parseCallbackResponse`
@@ -159,6 +211,7 @@ handleRedirect({
 - `dapp.origin` must be `https://`.
 - Callback URLs must be `https://`, except `http://localhost`, `http://127.0.0.1`, and `http://[::1]`.
 - `launchGlyphRequest` and `glyphRequest` require a browser environment with `window`.
+- `subscribeViaRelay` uses `fetch` and works in any modern runtime (browsers, Node 18+, Bun, Deno, service workers).
 - Deep links target `glyph://v1/request?d=...`.
 
 ## Development
