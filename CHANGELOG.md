@@ -1,5 +1,11 @@
 # @glyph-oss/connect
 
+## 2.1.0
+
+### Minor Changes
+
+- 38d2d91: Add request lifecycle feedback, focus restoration, and configurable callback completion handling.
+
 ## 2.0.0
 
 ### Major Changes
