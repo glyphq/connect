@@ -505,6 +505,13 @@ export function handleRedirect(options: GlyphRedirectOptions = {}): GlyphRedirec
 
 // ── Callback parsing ───────────────────────────────────────────────────────────
 
+export {
+	subscribeViaRelay,
+	relayCallbackUrl,
+	DEFAULT_RELAY_URL,
+	type GlyphRelayOptions,
+} from "./relay-client";
+
 export function parseCallbackResponse(body: unknown): GlyphCallbackResponse {
 	if (!body || typeof body !== "object" || Array.isArray(body)) {
 		throw new Error("Callback body must be a JSON object");
