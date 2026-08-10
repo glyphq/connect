@@ -372,7 +372,7 @@ describe("@glyph-oss/connect", () => {
 		});
 
 		try {
-			const outcome = handleRedirect({
+			const outcome = await handleRedirect({
 				closeDelayMs: 1200,
 				onResult: (delivered) => { deliveredStatus = delivered.status; },
 			});

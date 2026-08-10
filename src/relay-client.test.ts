@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type GlyphCallbackResponse, canonicalJson, createConnectRequest, sha256CanonicalJson, verifyCallbackEnvelope } from "./index";
+import { type GlyphCallbackResponse, canonicalJson, createConnectRequest, parseOrVerifyCallback, sha256CanonicalJson, verifyCallbackEnvelope } from "./index";
 import {
 	createRelayCapabilities,
 	parseSSEStream,
@@ -29,6 +29,34 @@ function sseEvent(data: string, event: string, lineEnding = "\n"): string {
 
 function b64(value: string): string {
 	return Buffer.from(value).toString("base64");
+}
+
+function signedEnvelope(result: GlyphCallbackResponse, overrides: Record<string, unknown> = {}) {
+	const payload = {
+		version: "glyph-connect-callback-envelope/2" as const,
+		request_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		network: { id: "qubic:mainnet" as const },
+		nonce: result.nonce,
+		dapp_origin: "https://demo.app",
+		request_type: result.type,
+		exp: null,
+		issued_at: 1,
+		result_hash: sha256CanonicalJson(result),
+		relay: { callback_url: null, official_relay: false, route: null, v1_nonce: null, session_id: null, callback_capability_fingerprint: null },
+		...overrides,
+	};
+	return {
+		version: "glyph-connect-callback-envelope/2" as const,
+		result,
+		payload,
+		proof: {
+			algorithm: "qubic-schnorrq-sha256" as const,
+			identity: "wallet-identity",
+			public_key: b64("public-key"),
+			signature: b64("signature"),
+			signed_payload: canonicalJson(payload),
+		},
+	};
 }
 
 function canonicalize(value: unknown): string {
@@ -107,31 +135,8 @@ describe("relay client", () => {
 
 	test("verifyCallbackEnvelope verifies signed payloads with a custom verifier", async () => {
 		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("signed"), identity: "AAAA", permissions: ["transfer"] };
-		const payload = {
-			version: "glyph-connect-callback-envelope/2" as const,
-			request_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-			network: { id: "qubic:mainnet" as const },
-			nonce: result.nonce,
-			dapp_origin: "https://demo.app",
-			request_type: result.type,
-			exp: null,
-			issued_at: 1,
-			result_hash: sha256CanonicalJson(result),
-			relay: { callback_url: null, official_relay: false, route: null, v1_nonce: null, session_id: null, callback_capability_fingerprint: null },
-		};
-		const signedPayload = canonicalJson(payload);
-		const envelope = {
-			version: "glyph-connect-callback-envelope/2" as const,
-			result,
-			payload,
-			proof: {
-				algorithm: "qubic-schnorrq-sha256" as const,
-				identity: result.identity,
-				public_key: b64("public-key"),
-				signature: b64("signature"),
-				signed_payload: signedPayload,
-			},
-		};
+		const envelope = signedEnvelope(result);
+		const signedPayload = envelope.proof.signed_payload;
 		await expect(verifyCallbackEnvelope(envelope, {
 			expected: { nonce: result.nonce, type: result.type },
 			trustedPublicKeys: [envelope.proof.public_key],
@@ -144,6 +149,27 @@ describe("relay client", () => {
 			},
 		})).resolves.toEqual(result);
 		await expect(verifyCallbackEnvelope(envelope, { requireSigned: true, verifySignature: () => false })).rejects.toThrow("signature is invalid");
+	});
+
+	test("parseOrVerifyCallback routes signed v2 envelopes and rejects tampering", async () => {
+		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("route"), identity: "AAAA", permissions: ["transfer"] };
+		const envelope = signedEnvelope(result);
+		await expect(parseOrVerifyCallback(envelope, { verifySignature: () => true })).resolves.toEqual(result);
+		await expect(parseOrVerifyCallback({ ...envelope, result: { ...result, nonce: validNonce("other") } }, { verifySignature: () => true })).rejects.toThrow("does not match result");
+	});
+
+	test("verifyCallbackEnvelope rejects unsigned v2 expectations", async () => {
+		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("unsigned"), identity: "AAAA", permissions: ["transfer"] };
+		await expect(verifyCallbackEnvelope(result, { expectedRequestHash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" })).rejects.toThrow("signed Glyph callback envelope");
+		await expect(verifyCallbackEnvelope(result, { trustedPublicKeys: [b64("public-key")] })).rejects.toThrow("signed Glyph callback envelope");
+		await expect(verifyCallbackEnvelope(result, { verifySignature: () => true })).rejects.toThrow("signed Glyph callback envelope");
+	});
+
+	test("verifyCallbackEnvelope rejects wrong expected request hash and network", async () => {
+		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("wrong"), identity: "AAAA", permissions: ["transfer"] };
+		const envelope = signedEnvelope(result);
+		await expect(verifyCallbackEnvelope(envelope, { expectedRequestHash: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", verifySignature: () => true })).rejects.toThrow("request_hash does not match");
+		await expect(verifyCallbackEnvelope(envelope, { expectedNetwork: { id: "qubic:testnet" }, verifySignature: () => true })).rejects.toThrow("network does not match");
 	});
 
 	test("subscribeViaRelayV2 calls onStatus with progress events", async () => {
