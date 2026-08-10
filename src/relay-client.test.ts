@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type GlyphCallbackResponse, createConnectRequest } from "./index";
-import { parseSSEStream, relayCallbackUrl, subscribeViaRelay } from "./relay-client";
+import { type GlyphCallbackResponse, createConnectRequest, verifyCallbackEnvelope } from "./index";
+import {
+	createRelayCapabilities,
+	parseSSEStream,
+	prepareRelaySession,
+	relayCallbackUrl,
+	relayUrls,
+	subscribeViaRelay,
+	subscribeViaRelayV2,
+} from "./relay-client";
 
 const originalFetch = globalThis.fetch;
 
@@ -19,6 +27,22 @@ function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
 
 function sseEvent(data: string, event: string, lineEnding = "\n"): string {
 	return `event: ${event}${lineEnding}data: ${data}${lineEnding}${lineEnding}`;
+}
+
+function b64(value: string): string {
+	return Buffer.from(value).toString("base64");
+}
+
+function canonicalize(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value);
+	if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+	const record = value as Record<string, unknown>;
+	return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalize(record[key])}`).join(",")}}`;
+}
+
+async function sha256Base64Url(input: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+	return Buffer.from(digest).toString("base64url");
 }
 
 function mockFetchWithSse(chunks: string[], assertUrl?: (url: string, init?: RequestInit) => void) {
@@ -106,6 +130,90 @@ describe("relay client", () => {
 
 	test("subscribeViaRelay requires expectedType when subscribing by nonce string", () => {
 		expect(() => subscribeViaRelay(validNonce(), { timeoutMs: 10 })).toThrow("expectedType");
+	});
+
+	test("relay v2 helpers split callback and read capabilities", () => {
+		const caps = createRelayCapabilities();
+		expect(caps.session).not.toBe(caps.callbackCap);
+		expect(caps.callbackCap).not.toBe(caps.readCap);
+		expect(caps.callbackCap.startsWith("c_")).toBe(true);
+		expect(caps.readCap.startsWith("r_")).toBe(true);
+		const urls = relayUrls(caps);
+		expect(urls.registerUrl).toBe(`https://relay.glyphq.org/v2/register/${caps.session}`);
+		expect(urls.callbackUrl).toBe(`https://relay.glyphq.org/v2/callback/${caps.session}/${caps.callbackCap}`);
+		expect(urls.streamUrl).toBe(`https://relay.glyphq.org/v2/stream/${caps.session}/${caps.readCap}`);
+		expect(urls.resultUrl).toBe(`https://relay.glyphq.org/v2/result/${caps.session}/${caps.readCap}`);
+		expect(urls.callbackUrl).not.toContain(caps.readCap);
+		expect(urls.streamUrl).not.toContain(caps.callbackCap);
+		expect(() => createRelayCapabilities({ session: caps.session, callbackCap: caps.session, readCap: caps.readCap })).toThrow("callback capability");
+		expect(() => createRelayCapabilities({ session: caps.session, callbackCap: caps.callbackCap, readCap: caps.callbackCap })).toThrow("read capability");
+	});
+
+	test("prepareRelaySession registers caps before the stream is opened", async () => {
+		const caps = createRelayCapabilities();
+		const request = createConnectRequest({ type: "connect", dapp: { origin: "https://demo.app" } });
+		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: request.nonce, identity: "AAAA", permissions: ["transfer"] };
+		const calls: string[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			calls.push(`${init?.method ?? "GET"} ${url}`);
+			if (url === `https://relay.glyphq.org/v2/register/${caps.session}`) {
+				expect(init?.method).toBe("POST");
+				expect((init?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+				expect((init?.headers as Record<string, string>).Accept).toBe("application/json");
+				expect(JSON.parse(String(init?.body))).toEqual({ callbackCap: caps.callbackCap, readCap: caps.readCap });
+				return Promise.resolve(new Response(JSON.stringify({ status: "ok" }), { headers: { "Content-Type": "application/json" } }));
+			}
+			expect(url).toBe(`https://relay.glyphq.org/v2/stream/${caps.session}/${caps.readCap}`);
+			expect(url).not.toContain(caps.callbackCap);
+			return Promise.resolve(new Response(sseStream([sseEvent(JSON.stringify(result), "result")]), { headers: { "Content-Type": "text/event-stream" } }));
+		}) as typeof fetch;
+
+		const prepared = await prepareRelaySession(caps);
+		expect(prepared.registered).toBe(true);
+		await expect(subscribeViaRelayV2(request, prepared, { timeoutMs: 2_000 })).resolves.toEqual(result);
+		expect(calls).toEqual([
+			`POST https://relay.glyphq.org/v2/register/${caps.session}`,
+			`GET https://relay.glyphq.org/v2/stream/${caps.session}/${caps.readCap}`,
+		]);
+	});
+
+	test("verifyCallbackEnvelope verifies signed payloads with a custom verifier", async () => {
+		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("signed"), identity: "AAAA", permissions: ["transfer"] };
+		const payload = {
+			version: "glyph-connect-callback-envelope/1" as const,
+			nonce: result.nonce,
+			dapp_origin: "https://demo.app",
+			request_type: result.type,
+			exp: null,
+			result_hash: await sha256Base64Url(canonicalize(result)),
+			relay: { callback_url: null, official_relay: false, route: null, v1_nonce: null, session_id: null, callback_capability_fingerprint: null },
+		};
+		const signedPayload = canonicalize(payload);
+		const envelope = {
+			version: "glyph-connect-callback-envelope/1" as const,
+			result,
+			payload,
+			proof: {
+				algorithm: "qubic-schnorrq-sha256" as const,
+				identity: result.identity,
+				public_key: b64("public-key"),
+				signature: b64("signature"),
+				signed_payload: signedPayload,
+			},
+		};
+		await expect(verifyCallbackEnvelope(envelope, {
+			expected: { nonce: result.nonce, type: result.type },
+			trustedPublicKeys: [envelope.proof.public_key],
+			expectedDappOrigin: "https://demo.app",
+			expectedExp: null,
+			verifySignature(input) {
+				expect(input.algorithm).toBe("qubic-schnorrq-sha256");
+				expect(new TextDecoder().decode(input.payload)).toBe(signedPayload);
+				return true;
+			},
+		})).resolves.toEqual(result);
+		await expect(verifyCallbackEnvelope(envelope, { requireSigned: true, verifySignature: () => false })).rejects.toThrow("signature is invalid");
 	});
 
 	test("subscribeViaRelay calls onStatus with progress events", async () => {

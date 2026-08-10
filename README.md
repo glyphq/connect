@@ -97,6 +97,26 @@ const result = parseCallbackResponse(await req.json(), {
 });
 ```
 
+For the secure callback protocol, accept the wallet's `glyph-connect-callback-envelope/1` body and verify its Qubic SchnorrQ proof before trusting the decoded result:
+
+```ts
+import { verifyCallbackEnvelope } from "@glyph-oss/connect";
+
+const result = await verifyCallbackEnvelope(await req.json(), {
+  expected: { nonce: request.nonce, type: request.type },
+  expectedDappOrigin: request.dapp.origin,
+  expectedExp: request.exp ?? null,
+  expectedCallbackUrl: callbackUrl,
+  requireSigned: true,
+  trustedPublicKeys: [walletCallbackPublicKey],
+  verifySignature(input) {
+    // The SDK performs strict envelope, canonical payload, hash, nonce, and type checks.
+    // Inject a Qubic SchnorrQ verifier for the final cryptographic signature check.
+    return verifySchnorrQ(input.payload, input.signature, input.publicKey);
+  },
+});
+```
+
 ## Browser Promise Flow
 
 Use `glyphRequest()` when you want a single promise instead of wiring your own callback handler.
@@ -123,9 +143,9 @@ handleRedirect();
 
 `glyphRequest()` opens Glyph, waits on `BroadcastChannel`, and accepts a broadcast only when the result matches the request nonce and type.
 
-## Relay Stream (no server required)
+## Legacy Relay v1 helpers
 
-When your dApp has no backend, use the official Glyph relay at `https://relay.glyphq.org` to receive results via SSE.
+The `subscribeViaRelay()` and `relayCallbackUrl()` helpers are retained for older wallet/relay deployments. They use `/v1/stream/:nonce` and `/v1/callback/:nonce` and are not the primary flow for the secure relay. Use the v2 prepared session API below for current relay-compatible integrations.
 
 ```
 dApp ──── glyph:// deep link ──────→ wallet (Tauri)
@@ -162,6 +182,30 @@ const result = await resultPromise;
 
 `subscribeViaRelay()` uses streaming `fetch` and a standards-compliant SSE parser, including CRLF and multi-line `data:` fields. Custom relay origins are rejected because the wallet only treats the official relay callback as a trusted cross-origin delivery URL.
 
+### Secure relay v2 capabilities
+
+The next relay protocol splits write and read authority. Use a callback capability only in the wallet callback URL, and keep the read capability only in your dApp process:
+
+```ts
+import {
+	prepareRelaySession,
+	subscribeViaRelayV2,
+	createEnvelope,
+	launchGlyphRequest,
+} from "@glyph-oss/connect";
+
+// Registers session, c_ callback capability, and r_ read capability at /v2/register/:session.
+const relay = await prepareRelaySession();
+const resultPromise = subscribeViaRelayV2(request, relay, {
+	verification: { requireSigned: true, verifySignature: verifySchnorrQ },
+});
+
+launchGlyphRequest(createEnvelope(request, { callback: relay.callbackUrl }));
+const result = await resultPromise;
+```
+
+`prepareRelaySession()` POSTs `{ callbackCap, readCap }` to `/v2/register/:session` before launch. `relay.callbackUrl` is `POST /v2/callback/:session/:callbackCap`, where `callbackCap` starts with `c_`. `relay.streamUrl` and `relay.resultUrl` use a separate `r_` read capability. The SDK enforces distinct, high-entropy base64url capabilities and never exposes the read capability to the wallet.
+
 ## Compatibility and Security Policy
 
 The SDK mirrors wallet `deep_link.rs` policy:
@@ -170,8 +214,10 @@ The SDK mirrors wallet `deep_link.rs` policy:
 - Delivery URLs must use HTTPS, must not embed credentials, and must not target localhost, private, reserved, multicast, documentation, or otherwise non-global IP literals.
 - `callback` and `redirect_uri` must match `dapp.origin`.
 - The only cross-origin `callback` exception is `https://relay.glyphq.org/v1/callback/:nonce` with a bounded relay nonce. `redirect_uri` has no relay exception.
+- Secure relay v2 callback URLs are `https://relay.glyphq.org/v2/callback/:session/:callbackCap`, with `callbackCap` prefixed by `c_`. Read URLs use a separate `r_` read capability and are not valid delivery URLs.
 - Relay callback and stream nonce path segments must be 16 to 128 characters using only `A-Z`, `a-z`, `0-9`, `-`, and `_`.
 - Callback and relay results are rejected when the result nonce or request type does not match the expected request.
+- Signed callback envelopes should be verified with `verifyCallbackEnvelope()` and a trusted wallet callback verification key. The SDK performs strict parser and binding checks, then calls your injected Qubic SchnorrQ verifier for the cryptographic signature check.
 
 ## API Reference
 
@@ -182,10 +228,10 @@ The SDK mirrors wallet `deep_link.rs` policy:
 `createTransferRequest` · `createScCallRequest` · `createSignMessageRequest` · `createVerifyMessageRequest` · `createConnectRequest`
 
 **Relay client**
-`subscribeViaRelay` · `relayCallbackUrl`
+`subscribeViaRelay` · `subscribeViaRelayV2` · `relayCallbackUrl` · `createRelayCapabilities` · `relayUrls` · `registerRelaySession` · `prepareRelaySession`
 
 **Utilities**
-`createNonce` · `createExpiry` · `withRequestDefaults` · `validateGlyphRequest` · `canonicalDappOrigin` · `isAllowedCallbackUrl` · `isAllowedDeliveryUrl` · `isOfficialRelayCallbackUrl` · `base64UrlToString` · `parseCallbackResponse`
+`createNonce` · `createExpiry` · `withRequestDefaults` · `validateGlyphRequest` · `canonicalDappOrigin` · `isAllowedCallbackUrl` · `isAllowedDeliveryUrl` · `isOfficialRelayCallbackUrl` · `base64UrlToString` · `base64UrlToByteArray` · `parseCallbackResponse` · `verifyCallbackEnvelope` · `isSignedCallbackEnvelope`
 
 ## Development
 

@@ -75,6 +75,63 @@ export interface GlyphEnvelope {
 	redirect_uri?: string | null;
 }
 
+export const GLYPH_CALLBACK_ENVELOPE_VERSION = "glyph-connect-callback-envelope/1";
+export const GLYPH_CALLBACK_SIGNATURE_ALGORITHM = "qubic-schnorrq-sha256";
+
+export interface GlyphCallbackRelayBinding {
+	callback_url: string | null;
+	official_relay: boolean;
+	route: "v1_callback" | "v2_session_callback" | "unknown" | null;
+	v1_nonce: string | null;
+	session_id: string | null;
+	callback_capability_fingerprint: string | null;
+}
+
+export interface GlyphCallbackSignaturePayload {
+	version: typeof GLYPH_CALLBACK_ENVELOPE_VERSION;
+	nonce: string;
+	dapp_origin: string;
+	request_type: GlyphRequestType;
+	exp: number | null;
+	result_hash: string;
+	relay: GlyphCallbackRelayBinding;
+}
+
+export interface GlyphSignedCallbackEnvelope {
+	version: typeof GLYPH_CALLBACK_ENVELOPE_VERSION;
+	result: GlyphCallbackResponse;
+	payload: GlyphCallbackSignaturePayload;
+	proof: {
+		algorithm: typeof GLYPH_CALLBACK_SIGNATURE_ALGORITHM;
+		identity: string;
+		public_key: string;
+		signature: string;
+		signed_payload: string;
+	};
+}
+
+export interface GlyphCallbackVerificationOptions {
+	expected?: GlyphExpectedCallback;
+	/** Expected dapp.origin bound into the signed callback payload. */
+	expectedDappOrigin?: string;
+	/** Expected request exp bound into the signed callback payload. Use null when absent. */
+	expectedExp?: number | null;
+	/** Expected callback URL bound into the signed callback payload relay object. */
+	expectedCallbackUrl?: string | null;
+	/** Require a signed envelope instead of accepting legacy unsigned callbacks. */
+	requireSigned?: boolean;
+	/** Restrict accepted wallet callback verification keys. */
+	trustedPublicKeys?: string[];
+	/** Custom verifier. Required for schnorrq until WebCrypto supports it. */
+	verifySignature?: (input: {
+		algorithm: typeof GLYPH_CALLBACK_SIGNATURE_ALGORITHM;
+		payload: Uint8Array;
+		signature: Uint8Array;
+		publicKey: Uint8Array;
+		envelope: GlyphSignedCallbackEnvelope;
+	}) => boolean | Promise<boolean>;
+}
+
 // ── Callback response types ────────────────────────────────────────────────────
 
 export interface GlyphSignedTransferCallback {
@@ -217,12 +274,20 @@ function base64UrlToBytes(value: string): Uint8Array {
 	return bytes;
 }
 
+export function base64UrlToByteArray(value: string): Uint8Array {
+	return base64UrlToBytes(value);
+}
+
 function stringToBase64Url(value: string): string {
 	return bytesToBase64Url(new TextEncoder().encode(value));
 }
 
 export function base64UrlToString(value: string): string {
 	return new TextDecoder().decode(base64UrlToBytes(value));
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 // ── Validation helpers ─────────────────────────────────────────────────────────
@@ -462,18 +527,21 @@ export function validateGlyphRequest(request: GlyphRequest): GlyphRequest {
 export function isOfficialRelayCallbackUrl(value: string): boolean {
 	try {
 		const url = new URL(value);
-		const nonce = decodeURIComponent(url.pathname.slice("/v1/callback/".length));
-		return (
-			url.origin === OFFICIAL_RELAY_ORIGIN &&
-			url.username === "" &&
-			url.password === "" &&
-			url.pathname.startsWith("/v1/callback/") &&
-			url.pathname.split("/").length === 4 &&
-			url.search === "" &&
-			url.hash === "" &&
-			isRelayNoncePathSegment(nonce) &&
-			encodeURIComponent(nonce) === url.pathname.slice("/v1/callback/".length)
-		);
+		if (url.origin !== OFFICIAL_RELAY_ORIGIN || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return false;
+		if (url.pathname.startsWith("/v1/callback/") && url.pathname.split("/").length === 4) {
+			const nonce = decodeURIComponent(url.pathname.slice("/v1/callback/".length));
+			return isRelayNoncePathSegment(nonce) && encodeURIComponent(nonce) === url.pathname.slice("/v1/callback/".length);
+		}
+		if (url.pathname.startsWith("/v2/callback/") && url.pathname.split("/").length === 5) {
+			const parts = url.pathname.split("/").map(decodeURIComponent);
+			const session = parts[3];
+			const callbackCap = parts[4];
+			return typeof session === "string" && typeof callbackCap === "string"
+				&& /^[A-Za-z0-9_-]{22,128}$/.test(session)
+				&& /^c_[A-Za-z0-9_-]{22,128}$/.test(callbackCap)
+				&& session !== callbackCap;
+		}
+		return false;
 	} catch {
 		return false;
 	}
@@ -778,16 +846,24 @@ export function handleRedirect(options: GlyphRedirectOptions = {}): GlyphRedirec
 
 export {
 	subscribeViaRelay,
+	subscribeViaRelayV2,
 	relayCallbackUrl,
+	relayUrls,
+	createRelayCapabilities,
+	registerRelaySession,
+	prepareRelaySession,
 	DEFAULT_RELAY_URL,
 	type GlyphRelayOptions,
+	type GlyphRelayCapabilities,
+	type GlyphRelayUrls,
+	type GlyphPreparedRelaySession,
 } from "./relay-client.js";
 
 export function parseCallbackResponse(
 	body: unknown,
 	expected?: GlyphExpectedCallback,
 ): GlyphCallbackResponse {
-	if (!body || typeof body !== "object" || Array.isArray(body)) {
+	if (!isJsonObject(body)) {
 		throw new Error("Callback body must be a JSON object");
 	}
 	const raw = body as Record<string, unknown>;
@@ -860,4 +936,102 @@ export function parseCallbackResponse(
 	}
 
 	throw new Error(`Unknown callback status/type: "${status}"/"${type}"`);
+}
+
+export function isSignedCallbackEnvelope(body: unknown): body is GlyphSignedCallbackEnvelope {
+	if (!isJsonObject(body)) return false;
+	const proof = body.proof;
+	return (
+		body.version === GLYPH_CALLBACK_ENVELOPE_VERSION &&
+		isJsonObject(body.result) &&
+		isJsonObject(body.payload) &&
+		isJsonObject(proof) &&
+		proof.algorithm === GLYPH_CALLBACK_SIGNATURE_ALGORITHM &&
+		typeof proof.identity === "string" &&
+		typeof proof.public_key === "string" &&
+		typeof proof.signature === "string" &&
+		typeof proof.signed_payload === "string"
+	);
+}
+
+function canonicalize(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value);
+	if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+	const record = value as Record<string, unknown>;
+	return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalize(record[key])}`).join(",")}}`;
+}
+
+function base64ToBytes(value: string): Uint8Array {
+	if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 === 1) throw new Error("Invalid base64 value");
+	if (typeof Buffer !== "undefined") return new Uint8Array(Buffer.from(value, "base64"));
+	const binary = atob(value);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return bytes;
+}
+
+async function sha256Base64Url(input: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+	return bytesToBase64Url(new Uint8Array(digest));
+}
+
+function assertCallbackRelayBinding(relay: GlyphCallbackRelayBinding): void {
+	if (!isJsonObject(relay)) throw new Error("Callback payload relay binding must be an object");
+	if (relay.callback_url !== null && typeof relay.callback_url !== "string") throw new Error("Callback relay callback_url is invalid");
+	if (typeof relay.official_relay !== "boolean") throw new Error("Callback relay official_relay is invalid");
+	if (!(relay.route === "v1_callback" || relay.route === "v2_session_callback" || relay.route === "unknown" || relay.route === null)) {
+		throw new Error("Callback relay route is invalid");
+	}
+	if (relay.v1_nonce !== null && typeof relay.v1_nonce !== "string") throw new Error("Callback relay v1_nonce is invalid");
+	if (relay.session_id !== null && typeof relay.session_id !== "string") throw new Error("Callback relay session_id is invalid");
+	if (relay.callback_capability_fingerprint !== null && typeof relay.callback_capability_fingerprint !== "string") {
+		throw new Error("Callback relay callback_capability_fingerprint is invalid");
+	}
+}
+
+export async function verifyCallbackEnvelope(
+	body: unknown,
+	options: GlyphCallbackVerificationOptions = {},
+): Promise<GlyphCallbackResponse> {
+	if (!isSignedCallbackEnvelope(body)) {
+		if (options.requireSigned) throw new Error("Callback body must be a signed Glyph callback envelope");
+		return parseCallbackResponse(body, options.expected);
+	}
+
+	const result = parseCallbackResponse(body.result, options.expected);
+	if (body.payload.version !== GLYPH_CALLBACK_ENVELOPE_VERSION) throw new Error("Callback payload version is invalid");
+	if (body.payload.nonce !== result.nonce) throw new Error("Callback payload nonce does not match result nonce");
+	if (body.payload.request_type !== result.type) throw new Error("Callback payload request type does not match result type");
+	if (typeof body.payload.dapp_origin !== "string") throw new Error("Callback payload dapp_origin is invalid");
+	if (body.payload.exp !== null && !Number.isSafeInteger(body.payload.exp)) throw new Error("Callback payload exp is invalid");
+	assertCallbackRelayBinding(body.payload.relay);
+	if (options.expectedDappOrigin !== undefined && body.payload.dapp_origin !== canonicalDappOrigin(options.expectedDappOrigin)) {
+		throw new Error("Callback payload dapp_origin does not match expected origin");
+	}
+	if (options.expectedExp !== undefined && body.payload.exp !== options.expectedExp) {
+		throw new Error("Callback payload exp does not match expected request expiry");
+	}
+	if (options.expectedCallbackUrl !== undefined && body.payload.relay.callback_url !== options.expectedCallbackUrl) {
+		throw new Error("Callback payload relay callback_url does not match expected callback URL");
+	}
+	if (body.proof.signed_payload !== canonicalize(body.payload)) throw new Error("Callback signed_payload is not canonical");
+	if (body.payload.result_hash !== await sha256Base64Url(canonicalize(body.result))) {
+		throw new Error("Callback payload result_hash does not match result");
+	}
+	const signature = base64ToBytes(body.proof.signature);
+	const publicKey = base64ToBytes(body.proof.public_key);
+	if (options.trustedPublicKeys && !options.trustedPublicKeys.includes(body.proof.public_key)) {
+		throw new Error("Callback envelope public key is not trusted");
+	}
+	if (!options.verifySignature) throw new Error("verifySignature is required to verify Qubic SchnorrQ callback envelopes");
+
+	const verified = await options.verifySignature({
+		algorithm: GLYPH_CALLBACK_SIGNATURE_ALGORITHM,
+		payload: new TextEncoder().encode(body.proof.signed_payload),
+		signature,
+		publicKey,
+		envelope: body,
+	});
+	if (!verified) throw new Error("Callback envelope signature is invalid");
+	return result;
 }

@@ -1,7 +1,9 @@
 import {
 	assertRelayNoncePathSegment,
 	parseCallbackResponse,
+	verifyCallbackEnvelope,
 	type GlyphCallbackResponse,
+	type GlyphCallbackVerificationOptions,
 	type GlyphExpectedCallback,
 	type GlyphRequest,
 	type GlyphRequestStatus,
@@ -12,6 +14,7 @@ import {
 
 export const DEFAULT_RELAY_URL = "https://relay.glyphq.org";
 const DEFAULT_RELAY_ORIGIN = new URL(DEFAULT_RELAY_URL).origin;
+const REGISTERED_RELAY_SESSION: unique symbol = Symbol("glyph.registeredRelaySession");
 
 export interface GlyphRelayOptions {
 	/** Base URL of the official Glyph relay server. Only https://relay.glyphq.org is accepted. */
@@ -22,7 +25,32 @@ export interface GlyphRelayOptions {
 	timeoutMs?: number;
 	/** Receives transport-level progress for rendering request feedback. */
 	onStatus?: (status: GlyphRequestStatus) => void;
+	/** Verify signed callback envelopes before resolving. */
+	verification?: GlyphCallbackVerificationOptions;
 }
+
+export interface GlyphRelayCapabilities {
+	/** Shared relay session id. Safe to expose in callback and read URLs. */
+	session: string;
+	/** Write-only wallet callback capability. Do not expose to readers. */
+	callbackCap: string;
+	/** Read-only dApp stream/polling capability. Do not put in callback URLs. */
+	readCap: string;
+}
+
+export interface GlyphRelayUrls extends GlyphRelayCapabilities {
+	registerUrl: string;
+	callbackUrl: string;
+	streamUrl: string;
+	resultUrl: string;
+}
+
+export interface GlyphPreparedRelaySession extends GlyphRelayUrls {
+	registered: true;
+	readonly [REGISTERED_RELAY_SESSION]: true;
+}
+
+const CAPABILITY_BYTES = 32;
 
 // ── Relay URL and nonce helpers ─────────────────────────────────────────────
 
@@ -59,6 +87,71 @@ function expectedFromSubscription(
 	}
 	assertRelayNoncePathSegment(subscription.nonce);
 	return { nonce: subscription.nonce, type: subscription.type };
+}
+
+function createCapability(prefix = ""): string {
+	const bytes = new Uint8Array(CAPABILITY_BYTES);
+	globalThis.crypto.getRandomValues(bytes);
+	return `${prefix}${btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")}`;
+}
+
+function assertRelaySession(value: string): void {
+	if (!/^[A-Za-z0-9_-]{22,128}$/.test(value)) throw new Error("relay session must be 22-128 base64url characters");
+}
+
+function assertRelayCapability(value: string, field: string, prefix: "c_" | "r_"): void {
+	if (!value.startsWith(prefix) || !/^[A-Za-z0-9_-]{24,130}$/.test(value)) {
+		throw new Error(`${field} must start with '${prefix}' and contain 22-128 base64url capability characters`);
+	}
+}
+
+export function createRelayCapabilities(options: Partial<GlyphRelayCapabilities> = {}): GlyphRelayCapabilities {
+	const capabilities = {
+		session: options.session ?? createCapability(),
+		callbackCap: options.callbackCap ?? createCapability("c_"),
+		readCap: options.readCap ?? createCapability("r_"),
+	};
+	assertRelaySession(capabilities.session);
+	assertRelayCapability(capabilities.callbackCap, "relay callback capability", "c_");
+	assertRelayCapability(capabilities.readCap, "relay read capability", "r_");
+	if (capabilities.session === capabilities.callbackCap || capabilities.session === capabilities.readCap || capabilities.callbackCap === capabilities.readCap) {
+		throw new Error("relay session, callback capability, and read capability must be distinct");
+	}
+	return capabilities;
+}
+
+export function relayUrls(capabilities: GlyphRelayCapabilities = createRelayCapabilities(), relayUrl = DEFAULT_RELAY_URL): GlyphRelayUrls {
+	const relay = normalizeOfficialRelayUrl(relayUrl);
+	const caps = createRelayCapabilities(capabilities);
+	return {
+		...caps,
+		registerUrl: `${relay}/v2/register/${caps.session}`,
+		callbackUrl: `${relay}/v2/callback/${caps.session}/${caps.callbackCap}`,
+		streamUrl: `${relay}/v2/stream/${caps.session}/${caps.readCap}`,
+		resultUrl: `${relay}/v2/result/${caps.session}/${caps.readCap}`,
+	};
+}
+
+export async function registerRelaySession(
+	capabilities: GlyphRelayCapabilities,
+	relayUrl = DEFAULT_RELAY_URL,
+): Promise<GlyphRelayUrls> {
+	const urls = relayUrls(capabilities, relayUrl);
+	const response = await fetch(urls.registerUrl, {
+		method: "POST",
+		headers: { "Content-Type": "application/json", Accept: "application/json" },
+		body: JSON.stringify({ callbackCap: urls.callbackCap, readCap: urls.readCap }),
+	});
+	if (!response.ok) throw new Error(`Relay registration returned ${response.status}`);
+	return urls;
+}
+
+export async function prepareRelaySession(
+	capabilities: Partial<GlyphRelayCapabilities> = {},
+	relayUrl = DEFAULT_RELAY_URL,
+): Promise<GlyphPreparedRelaySession> {
+	const urls = await registerRelaySession(createRelayCapabilities(capabilities), relayUrl);
+	return { ...urls, registered: true, [REGISTERED_RELAY_SESSION]: true };
 }
 
 // ── SSE parser ─────────────────────────────────────────────────────────────
@@ -200,7 +293,9 @@ export function subscribeViaRelay(
 					if (msg.event === "result") {
 						try {
 							const raw = JSON.parse(msg.data) as unknown;
-							const result = parseCallbackResponse(raw, expected);
+							const result = options.verification
+								? await verifyCallbackEnvelope(raw, { ...options.verification, expected })
+								: parseCallbackResponse(raw, expected);
 							settled = true;
 							clearTimeout(timer);
 							abort?.abort();
@@ -223,6 +318,63 @@ export function subscribeViaRelay(
 					}
 				}
 
+				if (!settled) fail(new Error("Relay stream ended without a result"));
+			})
+			.catch((err) => {
+				if (settled && err instanceof Error && err.name === "AbortError") return;
+				fail(err);
+			});
+	});
+}
+
+/** Subscribe to the secure v2 relay stream using a read-only capability. */
+export function subscribeViaRelayV2(
+	subscription: GlyphRequest | GlyphExpectedCallback | string,
+	session: GlyphPreparedRelaySession,
+	options: GlyphRelayOptions = {},
+): Promise<GlyphCallbackResponse> {
+	const expected = expectedFromSubscription(subscription, options);
+	const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
+
+	return new Promise<GlyphCallbackResponse>((resolve, reject) => {
+		let settled = false;
+		let abort: AbortController | undefined;
+		const fail = (reason: unknown) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			abort?.abort();
+			const error = reason instanceof Error ? reason : new Error(String(reason));
+			options.onStatus?.({ state: "failed", error });
+			reject(error);
+		};
+		const timer = setTimeout(() => fail(new Error("Relay stream timed out")), timeoutMs);
+		options.onStatus?.({ state: "opening_wallet" });
+		abort = new AbortController();
+		fetch(session.streamUrl, { signal: abort.signal, headers: { Accept: "text/event-stream" } })
+			.then(async (response) => {
+				if (!response.ok) throw new Error(`Relay returned ${response.status}`);
+				if (!response.body) throw new Error("Relay returned no body");
+				options.onStatus?.({ state: "awaiting_approval" });
+				for await (const msg of parseSSEStream(response.body)) {
+					if (settled) break;
+					if (msg.event === "result") {
+						try {
+							const raw = JSON.parse(msg.data) as unknown;
+							const result = options.verification
+								? await verifyCallbackEnvelope(raw, { ...options.verification, expected })
+								: parseCallbackResponse(raw, expected);
+							settled = true;
+							clearTimeout(timer);
+							abort?.abort();
+							options.onStatus?.({ state: "completed", result });
+							resolve(result);
+						} catch (err) { fail(err); }
+						break;
+					}
+					if (msg.event === "timeout") { fail(new Error("Relay stream timed out")); break; }
+					if (msg.event === "close" && !settled) { fail(new Error("Relay stream closed without a result")); break; }
+				}
 				if (!settled) fail(new Error("Relay stream ended without a result"));
 			})
 			.catch((err) => {
