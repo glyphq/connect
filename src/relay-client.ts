@@ -234,99 +234,6 @@ export async function* parseSSEStream(
 
 // ── Relay client ───────────────────────────────────────────────────────────
 
-/**
- * Subscribe to the official relay SSE stream and return the validated result.
- *
- * Opens a streaming `fetch()` to `GET /v1/stream/:nonce` on
- * `https://relay.glyphq.org`. The result is accepted only when its nonce and
- * request type match the expected request.
- *
- * @example
- * const request = createConnectRequest({ type: "connect", dapp: { origin: "https://demo.app" } });
- * const stream = subscribeViaRelay(request);
- * const callbackUrl = relayCallbackUrl(request.nonce);
- * launchGlyphRequest(createEnvelope(request, { callback: callbackUrl }));
- * const result = await stream;
- */
-export function subscribeViaRelay(
-	subscription: GlyphRequest | GlyphExpectedCallback | string,
-	options: GlyphRelayOptions = {},
-): Promise<GlyphCallbackResponse> {
-	const relayUrl = normalizeOfficialRelayUrl(options.relayUrl);
-	const expected = expectedFromSubscription(subscription, options);
-	const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
-
-	return new Promise<GlyphCallbackResponse>((resolve, reject) => {
-		let settled = false;
-		let abort: AbortController | undefined;
-
-		const fail = (reason: unknown) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			abort?.abort();
-			const error = reason instanceof Error ? reason : new Error(String(reason));
-			options.onStatus?.({ state: "failed", error });
-			reject(error);
-		};
-
-		const timer = setTimeout(() => {
-			fail(new Error("Relay stream timed out"));
-		}, timeoutMs);
-
-		options.onStatus?.({ state: "opening_wallet" });
-		abort = new AbortController();
-
-		fetch(`${relayUrl}/v1/stream/${encodeURIComponent(expected.nonce)}`, {
-			signal: abort.signal,
-			headers: { Accept: "text/event-stream" },
-		})
-			.then(async (response) => {
-				if (!response.ok) throw new Error(`Relay returned ${response.status}`);
-				if (!response.body) throw new Error("Relay returned no body");
-
-				options.onStatus?.({ state: "awaiting_approval" });
-
-				for await (const msg of parseSSEStream(response.body)) {
-					if (settled) break;
-
-					if (msg.event === "result") {
-						try {
-							const raw = JSON.parse(msg.data) as unknown;
-							const result = options.verification
-								? await verifyCallbackEnvelope(raw, { ...options.verification, expected })
-								: parseCallbackResponse(raw, expected);
-							settled = true;
-							clearTimeout(timer);
-							abort?.abort();
-							options.onStatus?.({ state: "completed", result });
-							resolve(result);
-						} catch (err) {
-							fail(err);
-						}
-						break;
-					}
-
-					if (msg.event === "timeout") {
-						fail(new Error("Relay stream timed out"));
-						break;
-					}
-
-					if (msg.event === "close" && !settled) {
-						fail(new Error("Relay stream closed without a result"));
-						break;
-					}
-				}
-
-				if (!settled) fail(new Error("Relay stream ended without a result"));
-			})
-			.catch((err) => {
-				if (settled && err instanceof Error && err.name === "AbortError") return;
-				fail(err);
-			});
-	});
-}
-
 /** Subscribe to the secure v2 relay stream using a read-only capability. */
 export function subscribeViaRelayV2(
 	subscription: GlyphRequest | GlyphExpectedCallback | string,
@@ -382,19 +289,4 @@ export function subscribeViaRelayV2(
 				fail(err);
 			});
 	});
-}
-
-/**
- * Build the official relay callback URL for a relay-backed Glyph request.
- *
- * Use the request nonce as the relay nonce so the callback URL and SSE stream
- * are deliberately bound to the same expected result.
- */
-export function relayCallbackUrl(
-	nonce: string,
-	relayUrl: string = DEFAULT_RELAY_URL,
-): string {
-	const relay = normalizeOfficialRelayUrl(relayUrl);
-	assertRelayNoncePathSegment(nonce);
-	return `${relay}/v1/callback/${encodeURIComponent(nonce)}`;
 }
