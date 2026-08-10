@@ -528,10 +528,6 @@ export function isOfficialRelayCallbackUrl(value: string): boolean {
 	try {
 		const url = new URL(value);
 		if (url.origin !== OFFICIAL_RELAY_ORIGIN || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return false;
-		if (url.pathname.startsWith("/v1/callback/") && url.pathname.split("/").length === 4) {
-			const nonce = decodeURIComponent(url.pathname.slice("/v1/callback/".length));
-			return isRelayNoncePathSegment(nonce) && encodeURIComponent(nonce) === url.pathname.slice("/v1/callback/".length);
-		}
 		if (url.pathname.startsWith("/v2/callback/") && url.pathname.split("/").length === 5) {
 			const parts = url.pathname.split("/").map(decodeURIComponent);
 			const session = parts[3];
@@ -845,9 +841,7 @@ export function handleRedirect(options: GlyphRedirectOptions = {}): GlyphRedirec
 // ── Callback parsing ───────────────────────────────────────────────────────────
 
 export {
-	subscribeViaRelay,
 	subscribeViaRelayV2,
-	relayCallbackUrl,
 	relayUrls,
 	createRelayCapabilities,
 	registerRelaySession,

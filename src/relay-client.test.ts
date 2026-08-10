@@ -4,9 +4,7 @@ import {
 	createRelayCapabilities,
 	parseSSEStream,
 	prepareRelaySession,
-	relayCallbackUrl,
 	relayUrls,
-	subscribeViaRelay,
 	subscribeViaRelayV2,
 } from "./relay-client";
 
@@ -61,77 +59,6 @@ afterEach(() => {
 });
 
 describe("relay client", () => {
-	test("relayCallbackUrl builds the official callback path and encodes the nonce segment", () => {
-		const nonce = validNonce("abc");
-		expect(relayCallbackUrl(nonce, "https://relay.glyphq.org/")).toBe(
-			`https://relay.glyphq.org/v1/callback/${nonce}`,
-		);
-		expect(() => relayCallbackUrl("short")).toThrow("relay nonce");
-		expect(() => relayCallbackUrl(validNonce(), "http://localhost:3000")).toThrow(
-			"relayUrl must be exactly https://relay.glyphq.org",
-		);
-	});
-
-	test("subscribeViaRelay fetches only the official relay stream with an encoded nonce", async () => {
-		const request = createConnectRequest({
-			type: "connect",
-			dapp: { origin: "https://demo.app" },
-		});
-		const result: GlyphCallbackResponse = {
-			status: "connected",
-			type: "connect",
-			nonce: request.nonce,
-			identity: "AAAA",
-			permissions: ["transfer"],
-		};
-		mockFetchWithSse([sseEvent(JSON.stringify(result), "result")], (url, init) => {
-			expect(url).toBe(`https://relay.glyphq.org/v1/stream/${request.nonce}`);
-			expect((init?.headers as Record<string, string>).Accept).toBe("text/event-stream");
-		});
-
-		await expect(subscribeViaRelay(request, { timeoutMs: 2_000 })).resolves.toEqual(result);
-	});
-
-	test("subscribeViaRelay rejects malformed or mismatched relay results", async () => {
-		const nonce = validNonce("mismatch");
-		mockFetchWithSse([
-			sseEvent(
-				JSON.stringify({
-					status: "connected",
-					type: "connect",
-					nonce: `${nonce}other`,
-					identity: "AAAA",
-					permissions: ["transfer"],
-				}),
-				"result",
-			),
-		]);
-		await expect(
-			subscribeViaRelay({ nonce, type: "connect" }, { timeoutMs: 2_000 }),
-		).rejects.toThrow("expected request nonce");
-
-		mockFetchWithSse([
-			sseEvent(
-				JSON.stringify({
-					status: "signed",
-					type: "sign_message",
-					nonce,
-					identity: "AAAA",
-					signature: "sig",
-					public_key: "pk",
-				}),
-				"result",
-			),
-		]);
-		await expect(
-			subscribeViaRelay({ nonce, type: "connect" }, { timeoutMs: 2_000 }),
-		).rejects.toThrow("expected request type");
-	});
-
-	test("subscribeViaRelay requires expectedType when subscribing by nonce string", () => {
-		expect(() => subscribeViaRelay(validNonce(), { timeoutMs: 10 })).toThrow("expectedType");
-	});
-
 	test("relay v2 helpers split callback and read capabilities", () => {
 		const caps = createRelayCapabilities();
 		expect(caps.session).not.toBe(caps.callbackCap);
@@ -216,7 +143,9 @@ describe("relay client", () => {
 		await expect(verifyCallbackEnvelope(envelope, { requireSigned: true, verifySignature: () => false })).rejects.toThrow("signature is invalid");
 	});
 
-	test("subscribeViaRelay calls onStatus with progress events", async () => {
+	test("subscribeViaRelayV2 calls onStatus with progress events", async () => {
+		const caps = createRelayCapabilities();
+		const session = { ...relayUrls(caps), registered: true as const } as Awaited<ReturnType<typeof prepareRelaySession>>;
 		const nonce = validNonce("status");
 		const statuses: string[] = [];
 		const result: GlyphCallbackResponse = {
@@ -227,20 +156,23 @@ describe("relay client", () => {
 		};
 		mockFetchWithSse([sseEvent(JSON.stringify(result), "result")]);
 
-		await subscribeViaRelay(
+		await subscribeViaRelayV2(
 			{ nonce, type: "connect" },
-			{ timeoutMs: 2_000, onStatus: (s) => statuses.push(s.state) },
+			session,
+			{ timeoutMs: 2_000, onStatus: (status) => statuses.push(status.state) },
 		);
 		expect(statuses).toContain("opening_wallet");
 		expect(statuses).toContain("awaiting_approval");
 		expect(statuses).toContain("completed");
 	});
 
-	test("subscribeViaRelay rejects on relay timeout event", async () => {
+	test("subscribeViaRelayV2 rejects on relay timeout event", async () => {
+		const caps = createRelayCapabilities();
+		const session = { ...relayUrls(caps), registered: true as const } as Awaited<ReturnType<typeof prepareRelaySession>>;
 		const nonce = validNonce("timeout");
 		mockFetchWithSse([sseEvent(JSON.stringify({ status: "timeout" }), "timeout")]);
 		await expect(
-			subscribeViaRelay({ nonce, type: "connect" }, { timeoutMs: 2_000 }),
+			subscribeViaRelayV2({ nonce, type: "connect" }, session, { timeoutMs: 2_000 }),
 		).rejects.toThrow("Relay stream timed out");
 	});
 
@@ -279,7 +211,7 @@ describe("relay client", () => {
 		expect(events).toEqual([{ event: "result", data: '{"ok":true}' }]);
 	});
 
-	test("subscribeViaRelay resolves a result event when CRLF is split across chunks", async () => {
+	test("subscribeViaRelayV2 resolves a result event when CRLF is split across chunks", async () => {
 		const request = createConnectRequest({
 			type: "connect",
 			dapp: { origin: "https://demo.app" },
@@ -299,6 +231,9 @@ describe("relay client", () => {
 			"\r\n",
 		]);
 
-		await expect(subscribeViaRelay(request, { timeoutMs: 2_000 })).resolves.toEqual(result);
+		const caps = createRelayCapabilities();
+		const session = { ...relayUrls(caps), registered: true as const } as Awaited<ReturnType<typeof prepareRelaySession>>;
+
+		await expect(subscribeViaRelayV2(request, session, { timeoutMs: 2_000 })).resolves.toEqual(result);
 	});
 });
