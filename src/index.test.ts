@@ -45,33 +45,93 @@ describe("@glyph-oss/connect", () => {
 		expect(envelope.redirect_uri).toBe("https://demo.app/__glyph__");
 	});
 
-	// ── URL validation ─────────────────────────────────────────────────────────
+		// ── URL validation ─────────────────────────────────────────────────────────
 
-	test("allows only https and localhost http for callback/redirect_uri", () => {
-		expect(isAllowedCallbackUrl("https://demo.app/cb")).toBe(true);
-		expect(isAllowedCallbackUrl("http://localhost:3000/cb")).toBe(true);
-		expect(isAllowedCallbackUrl("http://127.0.0.1:3000/cb")).toBe(true);
-		expect(isAllowedCallbackUrl("http://[::1]:3000/cb")).toBe(true);
-		expect(isAllowedCallbackUrl("http://demo.app/cb")).toBe(false);
-	});
+		test("allows only credential-free global HTTPS delivery URLs", () => {
+			expect(isAllowedCallbackUrl("https://demo.app/cb", "https://demo.app")).toBe(true);
+			expect(
+				isAllowedCallbackUrl(
+					"https://relay.glyphq.org/v1/callback/3dd2842cbb7f42a79354df9ddf6542ae",
+					"https://demo.app",
+				),
+			).toBe(true);
+			expect(isAllowedCallbackUrl("http://localhost:3000/cb", "https://demo.app")).toBe(false);
+			expect(isAllowedCallbackUrl("https://127.0.0.1/cb", "https://demo.app")).toBe(false);
+			expect(isAllowedCallbackUrl("https://[::ffff:127.0.0.1]/cb", "https://demo.app")).toBe(false);
+			expect(isAllowedCallbackUrl("https://user@demo.app/cb", "https://demo.app")).toBe(false);
+			expect(isAllowedCallbackUrl("https://attacker.example/cb", "https://demo.app")).toBe(false);
+			expect(
+				isAllowedCallbackUrl(
+					"https://relay.glyphq.org/v1/stream/3dd2842cbb7f42a79354df9ddf6542ae",
+					"https://demo.app",
+				),
+			).toBe(false);
+		});
 
-	test("createEnvelope throws on disallowed callback URL", () => {
+		test("createEnvelope throws on disallowed callback URL", () => {
+			const req = createConnectRequest({
+				type: "connect",
+				dapp: { name: "Demo", origin: "https://demo.app" },
+			});
+			expect(() => createEnvelope(req, { callback: "http://demo.app/cb" })).toThrow();
+			expect(() => createEnvelope(req, { callback: "https://attacker.example/cb" })).toThrow();
+		});
+
+		test("createEnvelope throws on disallowed redirect_uri", () => {
 		const req = createConnectRequest({
 			type: "connect",
 			dapp: { name: "Demo", origin: "https://demo.app" },
 		});
-		expect(() => createEnvelope(req, { callback: "http://demo.app/cb" })).toThrow();
-	});
-
-	test("createEnvelope throws on disallowed redirect_uri", () => {
-		const req = createConnectRequest({
-			type: "connect",
-			dapp: { name: "Demo", origin: "https://demo.app" },
+			expect(() =>
+				createEnvelope(req, { redirect_uri: "http://demo.app/__glyph__" }),
+			).toThrow();
+			expect(() =>
+				createEnvelope(req, {
+					redirect_uri: "https://relay.glyphq.org/v1/callback/3dd2842cbb7f42a79354df9ddf6542ae",
+				}),
+			).toThrow();
 		});
-		expect(() =>
-			createEnvelope(req, { redirect_uri: "http://demo.app/__glyph__" }),
-		).toThrow();
-	});
+
+		test("request factories enforce wallet-compatible nonce, expiry, origin, and semantic bounds", () => {
+			expect(() =>
+				createConnectRequest(
+					{ type: "connect", dapp: { origin: "https://demo.app/path" } },
+					{ nonce: "3dd2842cbb7f42a79354df9ddf6542ae" },
+				),
+			).toThrow("credential-free HTTPS origin");
+			expect(() =>
+				createConnectRequest(
+					{ type: "connect", dapp: { origin: "https://127.0.0.1" } },
+					{ nonce: "3dd2842cbb7f42a79354df9ddf6542ae" },
+				),
+			).toThrow("non-global");
+			expect(() =>
+				createConnectRequest(
+					{ type: "connect", dapp: { origin: "https://[::ffff:127.0.0.1]" } },
+					{ nonce: "3dd2842cbb7f42a79354df9ddf6542ae" },
+				),
+			).toThrow("non-global");
+			expect(() =>
+				createConnectRequest({ type: "connect", dapp: { origin: "https://demo.app" } }, { nonce: "short" }),
+			).toThrow("16-128");
+			expect(() =>
+				createConnectRequest(
+					{ type: "connect", dapp: { origin: "https://demo.app" } },
+					{ ttlSeconds: 3601 },
+				),
+			).toThrow("3600");
+			expect(() =>
+				createTransferRequest(
+					{
+						type: "transfer",
+						dapp: { origin: "https://demo.app" },
+						to: "UVYAOYTNYCRBVFBHNFIJUEOUEPEDIDUWWEAXKFSJEBJVASCQEROJOVOEEATL",
+						amount: "0",
+					},
+					{ nonce: "3dd2842cbb7f42a79354df9ddf6542ae" },
+				),
+			).toThrow("positive");
+		});
 
 	test("base64UrlToString rejects malformed base64url input", () => {
 		expect(() => base64UrlToString("not-valid!")).toThrow("Invalid base64url value");
@@ -161,7 +221,7 @@ describe("@glyph-oss/connect", () => {
 		).toThrow("Unknown callback request type");
 	});
 
-	test("parseCallbackResponse throws on malformed permissions and rejection reasons", () => {
+		test("parseCallbackResponse throws on malformed permissions and rejection reasons", () => {
 		expect(() =>
 			parseCallbackResponse({
 				status: "connected",
@@ -181,13 +241,41 @@ describe("@glyph-oss/connect", () => {
 		).toThrow("Unknown rejection reason");
 	});
 
-	test("parseCallbackResponse throws on non-object input", () => {
-		expect(() => parseCallbackResponse(null)).toThrow();
-		expect(() => parseCallbackResponse("string")).toThrow();
-		expect(() => parseCallbackResponse(42)).toThrow();
-	});
+		test("parseCallbackResponse throws on non-object input", () => {
+			expect(() => parseCallbackResponse(null)).toThrow();
+			expect(() => parseCallbackResponse("string")).toThrow();
+			expect(() => parseCallbackResponse(42)).toThrow();
+		});
 
-	// ── handleRedirect ─────────────────────────────────────────────────────────
+		test("parseCallbackResponse rejects expected nonce and request type mismatches", () => {
+			expect(() =>
+				parseCallbackResponse(
+					{
+						status: "connected",
+						type: "connect",
+						nonce: "wrongNonce1234567890",
+						identity: "AAAA",
+						permissions: ["transfer"],
+					},
+					{ nonce: "expectedNonce1234567890", type: "connect" },
+				),
+			).toThrow("expected request nonce");
+			expect(() =>
+				parseCallbackResponse(
+					{
+						status: "signed",
+						type: "sign_message",
+						nonce: "expectedNonce1234567890",
+						identity: "AAAA",
+						signature: "sig",
+						public_key: "pk",
+					},
+					{ nonce: "expectedNonce1234567890", type: "connect" },
+				),
+			).toThrow("expected request type");
+		});
+
+		// ── handleRedirect ─────────────────────────────────────────────────────────
 
 	test("handleRedirect broadcasts result and is a no-op if no ?result= param", () => {
 		// No window in Bun. Confirm it returns safely.
@@ -222,8 +310,8 @@ describe("@glyph-oss/connect", () => {
 			bc.close();
 		});
 
-		expect((received as { status: string }).status).toBe("rejected");
-	});
+			expect((received as { status: string }).status).toBe("rejected");
+		});
 
 	test("handleRedirect reports completion and delays closing the callback window", async () => {
 		const nonce = "intentionalCallback123";

@@ -125,6 +125,11 @@ export type GlyphCallbackResponse =
 	| GlyphVerifiedCallback
 	| GlyphRejectedCallback;
 
+export interface GlyphExpectedCallback {
+	nonce: string;
+	type: GlyphRequestType;
+}
+
 export interface GlyphRequestDefaults {
 	nonce?: string;
 	exp?: number;
@@ -168,7 +173,11 @@ export type GlyphRedirectResult =
 
 const DEFAULT_EXPIRY_SECONDS = 300;
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
-const LOCAL_CALLBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const MAX_NONCE_AGE_SECONDS = 60 * 60;
+const MAX_ENCODED_PAYLOAD_BYTES = 8192;
+const MAX_SIGN_MESSAGE_CHARS = 2048;
+const MAX_INT64 = BigInt("9223372036854775807");
+const OFFICIAL_RELAY_ORIGIN = "https://relay.glyphq.org";
 const GLYPH_PERMISSIONS = new Set<GlyphPermission>(["transfer", "sc_call", "sign_message"]);
 const GLYPH_REQUEST_TYPES = new Set<GlyphRequestType>([
 	"transfer",
@@ -218,24 +227,6 @@ export function base64UrlToString(value: string): string {
 
 // ── Validation helpers ─────────────────────────────────────────────────────────
 
-function assertValidDappOrigin(origin: string): void {
-	let url: URL;
-	try {
-		url = new URL(origin);
-	} catch {
-		throw new Error("dApp origin must be a valid URL");
-	}
-	if (url.protocol !== "https:") {
-		throw new Error("dApp origin must use HTTPS");
-	}
-}
-
-function assertAllowedCallbackUrl(value: string, fieldName: "callback" | "redirect_uri"): void {
-	if (!isAllowedCallbackUrl(value)) {
-		throw new Error(`${fieldName} must use HTTPS or localhost HTTP`);
-	}
-}
-
 function isGlyphPermission(value: unknown): value is GlyphPermission {
 	return typeof value === "string" && GLYPH_PERMISSIONS.has(value as GlyphPermission);
 }
@@ -264,14 +255,277 @@ function readBoolean(raw: Record<string, unknown>, field: string): boolean {
 	return value;
 }
 
-export function isAllowedCallbackUrl(value: string): boolean {
+function normalizeHost(host: string): string {
+	return host.replace(/^\[(.*)\]$/, "$1").toLowerCase();
+}
+
+function parseIpv4(host: string): number[] | null {
+	const parts = host.split(".");
+	if (parts.length !== 4) return null;
+	const octets = parts.map((part) => {
+		if (!/^\d{1,3}$/.test(part)) return Number.NaN;
+		const value = Number(part);
+		return value >= 0 && value <= 255 ? value : Number.NaN;
+	});
+	return octets.every(Number.isInteger) ? octets : null;
+}
+
+function isNonGlobalIpv4(octets: number[]): boolean {
+	const [a = 0, b = 0, c = 0, d = 0] = octets;
+	return (
+		a === 0 ||
+		a === 10 ||
+		a === 127 ||
+		(a === 100 && b >= 64 && b <= 127) ||
+		(a === 169 && b === 254) ||
+		(a === 172 && b >= 16 && b <= 31) ||
+		(a === 192 && b === 168) ||
+		(a === 192 && b === 0 && (c === 0 || c === 2)) ||
+		(a === 198 && (b === 18 || b === 19)) ||
+		(a === 198 && b === 51 && c === 100) ||
+		(a === 203 && b === 0 && c === 113) ||
+		(a >= 224 && a <= 239) ||
+		(a >= 240 && a <= 255) ||
+		(a === 255 && b === 255 && c === 255 && d === 255)
+	);
+}
+
+function parseIpv4MappedIpv6(host: string): number[] | null {
+	const mapped = host.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+	if (mapped?.[1]) return parseIpv4(mapped[1]);
+	const hexMapped = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+	if (!hexMapped?.[1] || !hexMapped[2]) return null;
+	const high = Number.parseInt(hexMapped[1], 16);
+	const low = Number.parseInt(hexMapped[2], 16);
+	return [high >> 8, high & 0xff, low >> 8, low & 0xff];
+}
+
+function isNonGlobalIpv6(host: string): boolean {
+	const lower = host.toLowerCase();
+	const mapped = parseIpv4MappedIpv6(lower);
+	if (mapped) return isNonGlobalIpv4(mapped);
+	return (
+		lower === "::" ||
+		lower === "::1" ||
+		lower.startsWith("fc") ||
+		lower.startsWith("fd") ||
+		lower.startsWith("fe8") ||
+		lower.startsWith("fe9") ||
+		lower.startsWith("fea") ||
+		lower.startsWith("feb") ||
+		lower.startsWith("ff") ||
+		lower.startsWith("2001:db8:") ||
+		lower === "2001:db8::1"
+	);
+}
+
+export function isPrivateHost(host: string): boolean {
+	const normalized = normalizeHost(host.trim());
+	if (normalized === "localhost") return true;
+	const ipv4 = parseIpv4(normalized);
+	if (ipv4) return isNonGlobalIpv4(ipv4);
+	if (normalized.includes(":")) return isNonGlobalIpv6(normalized);
+	return false;
+}
+
+function assertPublicHost(host: string, fieldName: string): void {
+	if (!host || isPrivateHost(host)) {
+		throw new Error(`${fieldName} must not target a non-global address`);
+	}
+}
+
+export function canonicalDappOrigin(origin: string): string {
+	let url: URL;
+	try {
+		url = new URL(origin);
+	} catch {
+		throw new Error("dApp origin must be a valid URL");
+	}
+	if (
+		url.protocol !== "https:" ||
+		!url.hostname ||
+		url.username !== "" ||
+		url.password !== "" ||
+		url.pathname !== "/" ||
+		url.search !== "" ||
+		url.hash !== ""
+	) {
+		throw new Error("dApp origin must be a credential-free HTTPS origin");
+	}
+	assertPublicHost(url.hostname, "dApp origin");
+	return url.origin;
+}
+
+function parseIntegerLike(value: string | number, field: string): bigint {
+	if (typeof value === "number") {
+		if (!Number.isSafeInteger(value)) throw new Error(`${field} must be a safe integer`);
+		return BigInt(value);
+	}
+	if (!/^-?\d+$/.test(value)) throw new Error(`${field} must be an integer`);
+	return BigInt(value);
+}
+
+function assertNonce(value: string, field = "nonce"): void {
+	if (value.length < 16 || value.length > 128) {
+		throw new Error(`${field} must be 16-128 characters`);
+	}
+	if (!/^[A-Za-z0-9_+=-]+$/.test(value)) {
+		throw new Error(`${field} must use a base64url-safe or alphanumeric charset`);
+	}
+}
+
+export function isRelayNoncePathSegment(value: string): boolean {
+	return value.length >= 16 && value.length <= 128 && /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+export function assertRelayNoncePathSegment(value: string): void {
+	if (!isRelayNoncePathSegment(value)) {
+		throw new Error("relay nonce must be 16-128 characters using only A-Z, a-z, 0-9, '-' or '_'");
+	}
+}
+
+function assertExpiry(exp: number | undefined): void {
+	if (exp === undefined) return;
+	if (!Number.isSafeInteger(exp)) throw new Error("exp must be a unix timestamp integer");
+	const now = unixNow();
+	if (exp <= now) throw new Error("request has expired");
+	if (exp > now + MAX_NONCE_AGE_SECONDS) {
+		throw new Error("request expiry too far in the future (max 1 hour)");
+	}
+}
+
+function assertPermissions(permissions: GlyphPermission[] | undefined): void {
+	if (permissions === undefined) return;
+	if (!Array.isArray(permissions) || !permissions.every(isGlyphPermission)) {
+		throw new Error("connect: permissions contains an unknown permission");
+	}
+}
+
+export function validateGlyphRequest(request: GlyphRequest): GlyphRequest {
+	if (!request || typeof request !== "object") throw new Error("request must be an object");
+	if (!isGlyphRequestType(request.type)) throw new Error(`unknown request type: ${String(request.type)}`);
+	assertNonce(request.nonce);
+	assertExpiry(request.exp);
+	const origin = canonicalDappOrigin(request.dapp?.origin);
+
+	switch (request.type) {
+		case "transfer": {
+			if (typeof request.to !== "string" || request.to.length === 0) {
+				throw new Error("transfer: missing 'to'");
+			}
+			const amount = parseIntegerLike(request.amount, "transfer: 'amount'");
+			if (amount <= 0n || amount > MAX_INT64) throw new Error("transfer: 'amount' must be positive");
+			break;
+		}
+		case "sc_call": {
+			if (!Number.isInteger(request.contract_index) || request.contract_index < 0 || request.contract_index > 63) {
+				throw new Error("sc_call: 'contract_index' out of range");
+			}
+			if (!Number.isInteger(request.input_type) || request.input_type < 0) {
+				throw new Error("sc_call: 'input_type' must be non-negative");
+			}
+			if (request.amount !== undefined) {
+				const amount = parseIntegerLike(request.amount, "sc_call: 'amount'");
+				if (amount < 0n || amount > MAX_INT64) throw new Error("sc_call: 'amount' must be non-negative");
+			}
+			break;
+		}
+		case "sign_message":
+			if (typeof request.message !== "string" || request.message.length === 0) {
+				throw new Error("sign_message: 'message' must not be empty");
+			}
+			if ([...request.message].length > MAX_SIGN_MESSAGE_CHARS) {
+				throw new Error("sign_message: 'message' exceeds 2048 characters");
+			}
+			break;
+		case "verify_message":
+			if (typeof request.message !== "string" || request.message.length === 0) {
+				throw new Error("verify_message: 'message' must not be empty");
+			}
+			if (typeof request.signature !== "string") throw new Error("verify_message: missing 'signature'");
+			if (typeof request.public_key !== "string") throw new Error("verify_message: missing 'public_key'");
+			break;
+		case "connect":
+			assertPermissions(request.permissions);
+			break;
+	}
+
+	return {
+		...request,
+		dapp: {
+			...request.dapp,
+			origin,
+		},
+	} as GlyphRequest;
+}
+
+export function isOfficialRelayCallbackUrl(value: string): boolean {
 	try {
 		const url = new URL(value);
-		const host = url.hostname.toLowerCase();
-		const isLocal = LOCAL_CALLBACK_HOSTS.has(host);
-		return url.protocol === "https:" || (url.protocol === "http:" && isLocal);
+		const nonce = decodeURIComponent(url.pathname.slice("/v1/callback/".length));
+		return (
+			url.origin === OFFICIAL_RELAY_ORIGIN &&
+			url.username === "" &&
+			url.password === "" &&
+			url.pathname.startsWith("/v1/callback/") &&
+			url.pathname.split("/").length === 4 &&
+			url.search === "" &&
+			url.hash === "" &&
+			isRelayNoncePathSegment(nonce) &&
+			encodeURIComponent(nonce) === url.pathname.slice("/v1/callback/".length)
+		);
 	} catch {
 		return false;
+	}
+}
+
+export function isAllowedDeliveryUrl(
+	value: string,
+	claimedOrigin: string,
+	options: { allowOfficialRelayCallback?: boolean } = {},
+): boolean {
+	try {
+		const url = new URL(value);
+		if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || !url.hostname) {
+			return false;
+		}
+		if (isPrivateHost(url.hostname)) return false;
+		const canonicalOrigin = canonicalDappOrigin(claimedOrigin);
+		return (
+			url.origin === canonicalOrigin ||
+			(Boolean(options.allowOfficialRelayCallback) && isOfficialRelayCallbackUrl(value))
+		);
+	} catch {
+		return false;
+	}
+}
+
+export function isAllowedCallbackUrl(value: string, claimedOrigin?: string): boolean {
+	if (claimedOrigin === undefined) {
+		try {
+			const url = new URL(value);
+			return url.protocol === "https:" && url.username === "" && url.password === "" && !isPrivateHost(url.hostname);
+		} catch {
+			return false;
+		}
+	}
+	return isAllowedDeliveryUrl(value, claimedOrigin, { allowOfficialRelayCallback: true });
+}
+
+function assertAllowedDeliveryUrl(
+	value: string,
+	fieldName: "callback" | "redirect_uri",
+	claimedOrigin: string,
+): void {
+	const allowed = isAllowedDeliveryUrl(value, claimedOrigin, {
+		allowOfficialRelayCallback: fieldName === "callback",
+	});
+	if (!allowed) {
+		throw new Error(
+			fieldName === "callback"
+				? "callback must use HTTPS without credentials, target a global address, match dapp.origin, or be the official relay callback"
+				: "redirect_uri must use HTTPS without credentials, target a global address, and match dapp.origin",
+		);
 	}
 }
 
@@ -298,6 +552,9 @@ export function createExpiry(ttlSeconds = DEFAULT_EXPIRY_SECONDS): number {
 	if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
 		throw new Error("ttlSeconds must be a positive number");
 	}
+	if (ttlSeconds > MAX_NONCE_AGE_SECONDS) {
+		throw new Error("ttlSeconds must not exceed 3600 seconds");
+	}
 	return unixNow() + Math.floor(ttlSeconds);
 }
 
@@ -305,12 +562,16 @@ export function withRequestDefaults<T extends Omit<GlyphRequest, "nonce" | "exp"
 	request: T,
 	defaults: GlyphRequestDefaults = {},
 ): T & Pick<GlyphBaseRequest, "nonce" | "exp"> {
-	assertValidDappOrigin(request.dapp.origin);
-	return {
+	const withDefaults = {
 		...request,
+		dapp: {
+			...request.dapp,
+			origin: canonicalDappOrigin(request.dapp.origin),
+		},
 		nonce: defaults.nonce ?? createNonce(),
 		exp: defaults.exp ?? createExpiry(defaults.ttlSeconds),
-	};
+	} as T & Pick<GlyphBaseRequest, "nonce" | "exp">;
+	return validateGlyphRequest(withDefaults as GlyphRequest) as T & Pick<GlyphBaseRequest, "nonce" | "exp">;
 }
 
 // ── Request factories ──────────────────────────────────────────────────────────
@@ -352,23 +613,36 @@ export function createConnectRequest(
 
 // ── Envelope ───────────────────────────────────────────────────────────────────
 
+function normalizeEnvelope(envelope: GlyphEnvelope): GlyphEnvelope {
+	const request = validateGlyphRequest(envelope.request);
+	const claimedOrigin = request.dapp.origin;
+	if (envelope.callback) assertAllowedDeliveryUrl(envelope.callback, "callback", claimedOrigin);
+	if (envelope.redirect_uri) assertAllowedDeliveryUrl(envelope.redirect_uri, "redirect_uri", claimedOrigin);
+	return {
+		request,
+		callback: envelope.callback ?? null,
+		redirect_uri: envelope.redirect_uri ?? null,
+	};
+}
+
 export function createEnvelope(
 	request: GlyphRequest,
 	options: { callback?: string | null; redirect_uri?: string | null } = {},
 ): GlyphEnvelope {
-	if (options.callback) assertAllowedCallbackUrl(options.callback, "callback");
-	if (options.redirect_uri) assertAllowedCallbackUrl(options.redirect_uri, "redirect_uri");
-	return {
+	return normalizeEnvelope({
 		request,
 		callback: options.callback ?? null,
 		redirect_uri: options.redirect_uri ?? null,
-	};
+	});
 }
 
 export function encodeEnvelope(envelope: GlyphEnvelope): string {
-	if (envelope.callback) assertAllowedCallbackUrl(envelope.callback, "callback");
-	if (envelope.redirect_uri) assertAllowedCallbackUrl(envelope.redirect_uri, "redirect_uri");
-	return stringToBase64Url(JSON.stringify(envelope));
+	const normalized = normalizeEnvelope(envelope);
+	const encoded = stringToBase64Url(JSON.stringify(normalized));
+	if (encoded.length > MAX_ENCODED_PAYLOAD_BYTES) {
+		throw new Error("payload too large (max 8192 bytes base64)");
+	}
+	return encoded;
 }
 
 export function buildGlyphUrl(envelope: GlyphEnvelope): string {
@@ -405,7 +679,8 @@ export function launchGlyphRequest(envelope: GlyphEnvelope): string {
  * Opens Glyph via a link click (the page stays alive). After the user acts,
  * Glyph opens `redirect_uri?result=<base64url JSON>` in the browser. The page
  * at that path must call `handleRedirect()`. It broadcasts the result over a
- * BroadcastChannel and this Promise resolves.
+ * BroadcastChannel and this Promise resolves after validating the expected
+ * nonce and request type.
  *
  * @example
  * // In your main app:
@@ -422,15 +697,16 @@ export async function glyphRequest(
 	if (typeof window === "undefined") {
 		throw new Error("glyphRequest() can only be used in a browser environment");
 	}
+	const request = validateGlyphRequest(req);
 	const callbackPath = options.callbackPath ?? DEFAULT_GLYPH_CALLBACK_PATH;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const focusOnResult = options.focusOnResult ?? true;
 	const redirectUri = `${window.location.origin}${callbackPath}`;
-	const envelope = createEnvelope(req, { redirect_uri: redirectUri });
+	const envelope = createEnvelope(request, { redirect_uri: redirectUri });
 	const url = buildGlyphUrl(envelope);
 
 	return new Promise<GlyphCallbackResponse>((resolve, reject) => {
-		const channel = new BroadcastChannel(`${GLYPH_RESULT_CHANNEL_PREFIX}${req.nonce}`);
+		const channel = new BroadcastChannel(`${GLYPH_RESULT_CHANNEL_PREFIX}${request.nonce}`);
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const cleanup = () => {
 			if (timer) clearTimeout(timer);
@@ -447,9 +723,9 @@ export async function glyphRequest(
 		}, timeoutMs);
 
 		channel.onmessage = (e: MessageEvent) => {
-			cleanup();
 			try {
-				const result = parseCallbackResponse(e.data);
+				const result = parseCallbackResponse(e.data, request);
+				cleanup();
 				if (focusOnResult) window.focus();
 				options.onStatus?.({ state: "completed", result });
 				resolve(result);
@@ -470,13 +746,8 @@ export async function glyphRequest(
 
 /**
  * Call this at the route/page pointed to by your `callbackPath` (default `/__glyph__`).
- * Reads the `?result=` query param, broadcasts it to the waiting `glyphRequest()` Promise,
- * then closes the tab.
- *
- * @example
- * // pages/__glyph__.tsx  (or equivalent in your framework)
- * import { handleRedirect } from '@glyph-oss/connect';
- * handleRedirect();
+ * Reads the `?result=` query param, validates the callback shape, broadcasts it
+ * to the waiting `glyphRequest()` Promise, then closes the tab.
  */
 export function handleRedirect(options: GlyphRedirectOptions = {}): GlyphRedirectResult {
 	if (typeof window === "undefined") return { status: "missing" };
@@ -510,9 +781,12 @@ export {
 	relayCallbackUrl,
 	DEFAULT_RELAY_URL,
 	type GlyphRelayOptions,
-} from "./relay-client";
+} from "./relay-client.js";
 
-export function parseCallbackResponse(body: unknown): GlyphCallbackResponse {
+export function parseCallbackResponse(
+	body: unknown,
+	expected?: GlyphExpectedCallback,
+): GlyphCallbackResponse {
 	if (!body || typeof body !== "object" || Array.isArray(body)) {
 		throw new Error("Callback body must be a JSON object");
 	}
@@ -523,6 +797,12 @@ export function parseCallbackResponse(body: unknown): GlyphCallbackResponse {
 
 	if (!isGlyphRequestType(type)) {
 		throw new Error(`Unknown callback request type: "${type}"`);
+	}
+	if (expected && nonce !== expected.nonce) {
+		throw new Error("Callback nonce does not match the expected request nonce");
+	}
+	if (expected && type !== expected.type) {
+		throw new Error("Callback type does not match the expected request type");
 	}
 
 	if (status === "rejected") {

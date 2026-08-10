@@ -51,6 +51,7 @@
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "check": "bun run lint && bun run test && bun run build",
+    "smoke:node-import": "bun run build && node scripts/smoke-node-import.mjs",
     "audit": "bun audit --audit-level=high",
     "release:notes": "node scripts/extract-changelog-notes.mjs",
     "changeset": "changeset",
@@ -64,6 +65,6 @@
     "typescript": "5.9.3"
   },
   "overrides": {
-    "js-yaml": "4.3.0"
+    "js-yaml": "4.3.1"
   }
 }

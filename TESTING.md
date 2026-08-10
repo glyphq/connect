@@ -2,7 +2,7 @@
 
 Release checklist for the Glyph Connect SDK.
 
-This package sits directly on the wallet handoff boundary. Treat request-format drift and callback-policy regressions as release blockers.
+This package sits directly on the wallet handoff boundary. Treat request-format drift, result-validation drift, package import regressions, and callback-policy regressions as release blockers.
 
 ---
 
@@ -14,6 +14,7 @@ Run before every release:
 bun install --frozen-lockfile
 bun run check
 bun run audit
+bun run smoke:node-import
 ```
 
 This covers:
@@ -21,7 +22,8 @@ This covers:
 - TypeScript typecheck
 - unit tests
 - production build output
-- dependency audit for high-severity advisories
+- high-severity dependency audit
+- `npm pack`, install of the packed tarball into a clean temporary project, and Node ESM import of the published entrypoint
 
 ---
 
@@ -39,18 +41,22 @@ Verify all request helpers produce the expected shape:
 
 Checks:
 
-- `nonce` is generated when omitted
-- `exp` is generated when omitted
-- custom `nonce` and `exp` are preserved when provided
-- `dapp.origin` rejects non-HTTPS values
+- `nonce` is generated when omitted and is 16 to 128 characters
+- `exp` is generated when omitted, rejects expired values, and is capped to the wallet one hour replay window
+- custom `nonce` and `exp` are preserved only when wallet-compatible
+- `dapp.origin` is canonical HTTPS, credential-free, and has no path, query, or fragment
+- localhost, private, reserved, multicast, documentation, and otherwise non-global IP literals are rejected where the SDK can identify them locally
+- transfer, smart-contract, sign-message, verify-message, and permissions semantic bounds match wallet validation
 
 ### Envelope helpers
 
 Verify:
 
-- `createEnvelope()` accepts valid callback URLs
-- invalid callback URLs throw
-- `encodeEnvelope()` returns a base64url payload
+- `createEnvelope()` accepts same-origin HTTPS callback and redirect URLs
+- `callback` allows exactly the official relay callback route as the cross-origin exception
+- `redirect_uri` does not allow the relay exception
+- invalid credentials, non-global literals, non-HTTPS schemes, and cross-origin delivery URLs throw
+- `encodeEnvelope()` returns a base64url payload and enforces the 8192 byte encoded payload limit
 - `buildGlyphUrl()` produces `glyph://v1/request?d=...`
 - callback URLs stay inside the encoded envelope instead of being duplicated as query params
 
@@ -61,6 +67,7 @@ Verify:
 - `launchGlyphRequest()` returns the final URL
 - `glyphRequest()` rejects cleanly in a non-browser environment
 - `handleRedirect()` broadcasts parsed callback results on the expected `glyph:result:<nonce>` channel
+- `glyphRequest()` validates the received result against the expected nonce and request type before resolving
 
 ### Callback parser
 
@@ -71,19 +78,33 @@ Verify:
 - unknown request types throw
 - unknown permissions throw
 - rejection reasons are limited to `user_rejected`
+- expected nonce mismatches throw
+- expected request type mismatches throw
+
+### Relay client
+
+Verify:
+
+- `relayCallbackUrl()` accepts only the official relay origin and encodes a valid nonce path segment
+- relay stream subscriptions target only `https://relay.glyphq.org/v1/stream/:nonce`
+- subscribing by nonce string requires `expectedType`, or callers pass the request object directly
+- relay results are parsed and then checked against the expected nonce and request type
+- malformed JSON, malformed callback bodies, mismatched nonce, and mismatched type reject
+- the SSE parser accepts LF, CRLF, comments, and multi-line `data:` fields
 
 ---
 
 ## Cross-Compatibility Pass
 
-Before publishing, validate one generated URL against a current installed Glyph build.
+Before publishing, validate generated URLs against a current installed Glyph build.
 
 At minimum:
 
 1. Generate a `transfer` request URL with this package.
 2. Open it against Glyph.
 3. Confirm Glyph shows the request review screen.
-4. Repeat for `connect` and `sign_message`.
+4. Repeat for `connect`, `sign_message`, `verify_message`, and `sc_call` where possible.
+5. Generate a relay-backed callback with `relayCallbackUrl(request.nonce)` and confirm the wallet accepts only the official relay callback route.
 
 If Glyph rejects the payload, do not ship until the package and wallet are back in sync.
 
@@ -94,9 +115,11 @@ If Glyph rejects the payload, do not ship until the package and wallet are back 
 Treat these as high risk:
 
 - wallet request-envelope shape changes
-- callback policy changes
+- wallet `deep_link.rs` dApp origin, delivery URL, nonce, expiry, payload, or request semantic policy changes
+- callback and relay result validation drift
 - request type field renames
 - accidental Node-only or browser-only runtime assumptions in shared helpers
+- published-package ESM import regressions
 - old protocol or package references reappearing in public API or docs
 
 ---
@@ -106,8 +129,9 @@ Treat these as high risk:
 Do not publish if any of these fail:
 
 - package fails `bun run check`
+- `bun audit --audit-level=high` reports a vulnerability
+- packed tarball cannot be installed and imported by Node ESM
 - built `dist/` output is missing JS or `.d.ts`
 - generated deep links no longer open current Glyph builds
-- non-HTTPS origin validation regresses
-- callback URL policy regresses
+- origin, delivery URL, nonce, expiry, payload, request semantic, or result validation policy regresses
 - `git grep -i` finds old package names or protocols in source, docs, or metadata
