@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "canonical_json": {
+    "input": {
+      "b": 2,
+      "a": 1,
+      "nested": {
+        "z": null,
+        "a": [
+          true,
+          "é"
+        ]
+      }
+    },
+    "canonical": "{\"a\":1,\"b\":2,\"nested\":{\"a\":[true,\"é\"],\"z\":null}}",
+    "sha256": "sha256:d88tdtFDr50WtvOM-5anmCslhVYzo76ZHsrdGHAqr9w"
+  },
+  "custom_network_rpc": {
+    "url": "https://rpc.qubic.org",
+    "chain": "qubic",
+    "headers": {
+      "accept": "application/json"
+    }
+  },
+  "custom_network": {
+    "id": "qubic:custom:sha256:xrXlMeka7tqCgwbU_INSviGiGkEPfOyoV2a4VNn7ue8"
+  },
+  "request_envelope": {
+    "protocol": "glyph-connect-request/2",
+    "request": {
+      "type": "connect",
+      "dapp": {
+        "name": "Fixture",
+        "origin": "https://demo.app"
+      },
+      "permissions": [
+        "transfer"
+      ],
+      "nonce": "fixtureNonce1234567890"
+    },
+    "callback": null,
+    "redirect_uri": "https://demo.app/__glyph__",
+    "network": {
+      "id": "qubic:custom:sha256:xrXlMeka7tqCgwbU_INSviGiGkEPfOyoV2a4VNn7ue8"
+    },
+    "request_hash": "sha256:O9DWCe2Zr5uwPZug9kt1cZPCzYJm_JBYlobvdg3wld4"
+  },
+  "request_hash_input": {
+    "protocol": "glyph-connect-request/2",
+    "request": {
+      "type": "connect",
+      "dapp": {
+        "name": "Fixture",
+        "origin": "https://demo.app"
+      },
+      "permissions": [
+        "transfer"
+      ],
+      "nonce": "fixtureNonce1234567890"
+    },
+    "callback": null,
+    "redirect_uri": "https://demo.app/__glyph__",
+    "network": {
+      "id": "qubic:custom:sha256:xrXlMeka7tqCgwbU_INSviGiGkEPfOyoV2a4VNn7ue8"
+    }
+  },
+  "request_hash": "sha256:O9DWCe2Zr5uwPZug9kt1cZPCzYJm_JBYlobvdg3wld4"
+}

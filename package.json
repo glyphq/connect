@@ -23,6 +23,7 @@
   "sideEffects": false,
   "files": [
     "dist",
+    "fixtures",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

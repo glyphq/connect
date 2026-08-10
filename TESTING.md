@@ -57,7 +57,7 @@ Verify:
 - `redirect_uri` does not allow the relay exception
 - invalid credentials, non-global literals, non-HTTPS schemes, and cross-origin delivery URLs throw
 - `encodeEnvelope()` returns a base64url payload and enforces the 8192 byte encoded payload limit
-- `buildGlyphUrl()` produces `glyph://v1/request?d=...`
+- `buildGlyphUrl()` produces `glyph://v2/request?d=...` with `protocol: "glyph-connect-request/2"`, a mainnet default network binding, and a validated `request_hash`.
 - callback URLs stay inside the encoded envelope instead of being duplicated as query params
 
 ### Browser launch helper

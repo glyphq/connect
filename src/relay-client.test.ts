@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type GlyphCallbackResponse, createConnectRequest, verifyCallbackEnvelope } from "./index";
+import { type GlyphCallbackResponse, canonicalJson, createConnectRequest, sha256CanonicalJson, verifyCallbackEnvelope } from "./index";
 import {
 	createRelayCapabilities,
 	parseSSEStream,
@@ -108,17 +108,20 @@ describe("relay client", () => {
 	test("verifyCallbackEnvelope verifies signed payloads with a custom verifier", async () => {
 		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("signed"), identity: "AAAA", permissions: ["transfer"] };
 		const payload = {
-			version: "glyph-connect-callback-envelope/1" as const,
+			version: "glyph-connect-callback-envelope/2" as const,
+			request_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			network: { id: "qubic:mainnet" as const },
 			nonce: result.nonce,
 			dapp_origin: "https://demo.app",
 			request_type: result.type,
 			exp: null,
-			result_hash: await sha256Base64Url(canonicalize(result)),
+			issued_at: 1,
+			result_hash: sha256CanonicalJson(result),
 			relay: { callback_url: null, official_relay: false, route: null, v1_nonce: null, session_id: null, callback_capability_fingerprint: null },
 		};
-		const signedPayload = canonicalize(payload);
+		const signedPayload = canonicalJson(payload);
 		const envelope = {
-			version: "glyph-connect-callback-envelope/1" as const,
+			version: "glyph-connect-callback-envelope/2" as const,
 			result,
 			payload,
 			proof: {

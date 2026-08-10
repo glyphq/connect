@@ -29,7 +29,7 @@ The package is published as Node-compatible ESM and supports Node 18+ for non-br
 ## Quick Start
 
 ```ts
-import { createTransferRequest, createEnvelope, buildGlyphUrl } from "@glyph-oss/connect";
+import { createTransferRequest, createEnvelope, buildGlyphUrl, GLYPH_MAINNET } from "@glyph-oss/connect";
 
 const request = createTransferRequest({
   type: "transfer",
@@ -40,6 +40,7 @@ const request = createTransferRequest({
 
 const envelope = createEnvelope(request, {
   callback: "https://my.app/api/glyph/callback",
+  network: GLYPH_MAINNET, // default when omitted
 });
 
 const url = buildGlyphUrl(envelope);
@@ -63,9 +64,12 @@ Requests are wrapped in an envelope before encoding into the deep-link URL:
 
 ```ts
 interface GlyphEnvelope {
+  protocol: "glyph-connect-request/2";
   request: GlyphRequest;
   callback?: string | null;
   redirect_uri?: string | null;
+  network: { id: "qubic:mainnet" | "qubic:testnet" | `qubic:custom:sha256:${string}` };
+  request_hash: `sha256:${string}`;
 }
 ```
 
@@ -74,7 +78,9 @@ const envelope = createEnvelope(request, { callback: "https://my.app/api/callbac
 const url = buildGlyphUrl(envelope);
 ```
 
-Deep links target `glyph://v1/request?d=<base64url envelope>`. Encoded payloads are bounded to the wallet's 8192 byte base64url limit.
+Deep links target `glyph://v2/request?d=<base64url envelope>`. The SDK has no v1 request launch compatibility. `request_hash` is computed over the RFC8785/JCS canonical UTF-8 JSON of `{ protocol, request, callback, redirect_uri, network }`, excluding `request_hash`. Encoded payloads are bounded to the wallet's 8192 byte base64url limit.
+
+Mainnet is the safe default. Use `GLYPH_TESTNET` for testnet or `createCustomNetworkBinding(rpcObject)` for a custom RPC binding. The custom network id is `qubic:custom:sha256:<JCS hash of rpcObject>`.
 
 ## Result Delivery
 
@@ -97,7 +103,7 @@ const result = parseCallbackResponse(await req.json(), {
 });
 ```
 
-For the secure callback protocol, accept the wallet's `glyph-connect-callback-envelope/1` body and verify its Qubic SchnorrQ proof before trusting the decoded result:
+For the secure callback protocol, accept the wallet's `glyph-connect-callback-envelope/2` body and verify its Qubic SchnorrQ proof before trusting the decoded result. V2 callbacks are bound to the original `request_hash` and `network`:
 
 ```ts
 import { verifyCallbackEnvelope } from "@glyph-oss/connect";
@@ -105,6 +111,8 @@ import { verifyCallbackEnvelope } from "@glyph-oss/connect";
 const result = await verifyCallbackEnvelope(await req.json(), {
   expected: { nonce: request.nonce, type: request.type },
   expectedDappOrigin: request.dapp.origin,
+  expectedRequestHash: envelope.request_hash,
+  expectedNetwork: envelope.network,
   expectedExp: request.exp ?? null,
   expectedCallbackUrl: callbackUrl,
   requireSigned: true,
