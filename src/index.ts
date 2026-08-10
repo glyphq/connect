@@ -1100,6 +1100,23 @@ async function sha256Base64Url(input: string): Promise<string> {
 	return bytesToBase64Url(new Uint8Array(digest));
 }
 
+/**
+ * Mirror Wallet's signed relay binding without retaining the write capability
+ * in the callback payload. All other callback URLs remain raw bindings.
+ */
+async function canonicalizeExpectedCallbackUrl(callbackUrl: string | null): Promise<string | null> {
+	if (callbackUrl === null) return null;
+	try {
+		const url = new URL(callbackUrl);
+		if (url.origin !== OFFICIAL_RELAY_ORIGIN || url.search || url.hash) return callbackUrl;
+		const v2 = url.pathname.match(/^\/v2\/callback\/([A-Za-z0-9_-]{16,128})\/([A-Za-z0-9_-]{16,256})$/);
+		if (!v2) return callbackUrl;
+		return `${url.origin}/v2/callback/${v2[1]!}/${await sha256Base64Url(v2[2]!)}`;
+	} catch {
+		return callbackUrl;
+	}
+}
+
 function assertCallbackRelayBinding(relay: GlyphCallbackRelayBinding): void {
 	if (!isJsonObject(relay)) throw new Error("Callback payload relay binding must be an object");
 	if (relay.callback_url !== null && typeof relay.callback_url !== "string") throw new Error("Callback relay callback_url is invalid");
@@ -1145,8 +1162,11 @@ export async function verifyCallbackEnvelope(
 	if (options.expectedExp !== undefined && body.payload.exp !== options.expectedExp) {
 		throw new Error("Callback payload exp does not match expected request expiry");
 	}
-	if (options.expectedCallbackUrl !== undefined && body.payload.relay.callback_url !== options.expectedCallbackUrl) {
-		throw new Error("Callback payload relay callback_url does not match expected callback URL");
+	if (options.expectedCallbackUrl !== undefined) {
+		const expectedCallbackUrl = await canonicalizeExpectedCallbackUrl(options.expectedCallbackUrl);
+		if (body.payload.relay.callback_url !== expectedCallbackUrl) {
+			throw new Error("Callback payload relay callback_url does not match expected callback URL");
+		}
 	}
 	if (body.proof.signed_payload !== canonicalJson(body.payload)) throw new Error("Callback signed_payload is not canonical");
 	if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(body.payload.result_hash)) throw new Error("Callback payload result_hash is invalid");
