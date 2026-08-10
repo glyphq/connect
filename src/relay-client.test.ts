@@ -150,4 +150,47 @@ describe("relay client", () => {
 		}
 		expect(events).toEqual([{ event: "result", data: '{"a":1,\n"b":2}' }]);
 	});
+
+	test("parseSSEStream treats split CRLF after event lines as one newline", async () => {
+		const events = [] as Array<{ event: string; data: string }>;
+		for await (const event of parseSSEStream(
+			sseStream(["event: result\r", "\n", "data: {\"ok\":true}\r\n", "\r\n"]),
+		)) {
+			events.push(event);
+		}
+		expect(events).toEqual([{ event: "result", data: '{"ok":true}' }]);
+	});
+
+	test("parseSSEStream treats split CRLF after data lines as one newline", async () => {
+		const events = [] as Array<{ event: string; data: string }>;
+		for await (const event of parseSSEStream(
+			sseStream(["event: result\r\n", "data: {\"ok\":true}\r", "\n", "\r\n"]),
+		)) {
+			events.push(event);
+		}
+		expect(events).toEqual([{ event: "result", data: '{"ok":true}' }]);
+	});
+
+	test("subscribeViaRelay resolves a result event when CRLF is split across chunks", async () => {
+		const request = createConnectRequest({
+			type: "connect",
+			dapp: { origin: "https://demo.app" },
+		});
+		const result: GlyphCallbackResponse = {
+			status: "connected",
+			type: "connect",
+			nonce: request.nonce,
+			identity: "AAAA",
+			permissions: ["transfer"],
+		};
+		mockFetchWithSse([
+			"event: result\r",
+			"\n",
+			`data: ${JSON.stringify(result)}\r`,
+			"\n",
+			"\r\n",
+		]);
+
+		await expect(subscribeViaRelay(request, { timeoutMs: 2_000 })).resolves.toEqual(result);
+	});
 });
