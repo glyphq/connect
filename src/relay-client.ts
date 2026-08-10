@@ -113,6 +113,7 @@ export async function* parseSSEStream(
 			while ((lineEnd = buffer.search(/[\r\n]/)) !== -1) {
 				const line = buffer.slice(0, lineEnd);
 				const separator = buffer[lineEnd];
+				if (separator === "\r" && lineEnd + 1 === buffer.length) break;
 				const next = separator === "\r" && buffer[lineEnd + 1] === "\n" ? lineEnd + 2 : lineEnd + 1;
 				buffer = buffer.slice(next);
 				const event = processLine(line);
@@ -121,6 +122,11 @@ export async function* parseSSEStream(
 		}
 
 		buffer += decoder.decode();
+		if (buffer.endsWith("\r")) {
+			const event = processLine(buffer.slice(0, -1));
+			if (event) yield event;
+			buffer = "";
+		}
 		if (buffer !== "") {
 			const event = processLine(buffer);
 			if (event) yield event;
