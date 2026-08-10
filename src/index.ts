@@ -91,6 +91,7 @@ export interface GlyphEnvelope {
 }
 
 export const GLYPH_CALLBACK_ENVELOPE_VERSION = "glyph-connect-callback-envelope/2";
+export const GLYPH_CALLBACK_PAYLOAD_VERSION = 2;
 export const GLYPH_CALLBACK_SIGNATURE_ALGORITHM = "qubic-schnorrq-sha256";
 
 export interface GlyphCallbackRelayBinding {
@@ -103,7 +104,7 @@ export interface GlyphCallbackRelayBinding {
 }
 
 export interface GlyphCallbackSignaturePayload {
-	version: typeof GLYPH_CALLBACK_ENVELOPE_VERSION;
+	version: typeof GLYPH_CALLBACK_PAYLOAD_VERSION;
 	request_hash: string;
 	network: GlyphNetworkBinding;
 	nonce: string;
@@ -887,7 +888,13 @@ export async function glyphRequest(
 
 		channel.onmessage = async (e: MessageEvent) => {
 			try {
-				const result = await parseOrVerifyCallback(e.data, { ...options.verification, expected: request });
+				const result = await parseOrVerifyCallback(e.data, {
+					...options.verification,
+					expected: request,
+					expectedRequestHash: envelope.request_hash,
+					expectedNetwork: envelope.network,
+					requireSigned: true,
+				});
 				cleanup();
 				if (focusOnResult) window.focus();
 				options.onStatus?.({ state: "completed", result });
@@ -919,9 +926,11 @@ export async function handleRedirect(options: GlyphRedirectOptions = {}): Promis
 	if (!encoded) return { status: "missing" };
 	try {
 		const raw = JSON.parse(base64UrlToString(encoded)) as unknown;
-		const result = await parseOrVerifyCallback(raw, options.verification);
+		const result = options.verification
+			? await parseOrVerifyCallback(raw, options.verification)
+			: parseCallbackResponse(isSignedCallbackEnvelope(raw) ? raw.result : raw);
 		const channel = new BroadcastChannel(`${GLYPH_RESULT_CHANNEL_PREFIX}${result.nonce}`);
-		channel.postMessage(result);
+		channel.postMessage(isSignedCallbackEnvelope(raw) ? raw : result);
 		channel.close();
 		if ((options.focusOpener ?? true) && window.opener && !window.opener.closed) {
 			window.opener.focus();
@@ -1116,7 +1125,7 @@ export async function verifyCallbackEnvelope(
 	}
 
 	const result = parseCallbackResponse(body.result, options.expected);
-	if (body.payload.version !== GLYPH_CALLBACK_ENVELOPE_VERSION) throw new Error("Callback payload version is invalid");
+	if (body.payload.version !== GLYPH_CALLBACK_PAYLOAD_VERSION) throw new Error("Callback payload version is invalid");
 	if (typeof body.payload.request_hash !== "string" || !body.payload.request_hash.startsWith("sha256:")) throw new Error("Callback payload request_hash is invalid");
 	validateNetworkBinding(body.payload.network);
 	if (body.payload.nonce !== result.nonce) throw new Error("Callback payload nonce does not match result nonce");

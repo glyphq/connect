@@ -33,7 +33,7 @@ function b64(value: string): string {
 
 function signedEnvelope(result: GlyphCallbackResponse, overrides: Record<string, unknown> = {}) {
 	const payload = {
-		version: "glyph-connect-callback-envelope/2" as const,
+		version: 2 as const,
 		request_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		network: { id: "qubic:mainnet" as const },
 		nonce: result.nonce,
@@ -161,8 +161,14 @@ describe("relay client", () => {
 	test("verifyCallbackEnvelope rejects unsigned v2 expectations", async () => {
 		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("unsigned"), identity: "AAAA", permissions: ["transfer"] };
 		await expect(verifyCallbackEnvelope(result, { expectedRequestHash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" })).rejects.toThrow("signed Glyph callback envelope");
+		await expect(verifyCallbackEnvelope(result, { expectedNetwork: { id: "qubic:mainnet" } })).rejects.toThrow("signed Glyph callback envelope");
 		await expect(verifyCallbackEnvelope(result, { trustedPublicKeys: [b64("public-key")] })).rejects.toThrow("signed Glyph callback envelope");
 		await expect(verifyCallbackEnvelope(result, { verifySignature: () => true })).rejects.toThrow("signed Glyph callback envelope");
+	});
+
+	test("verifyCallbackEnvelope requires numeric v2 payload version", async () => {
+		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("payload-version"), identity: "AAAA", permissions: ["transfer"] };
+		await expect(verifyCallbackEnvelope(signedEnvelope(result, { version: "glyph-connect-callback-envelope/2" }), { verifySignature: () => true })).rejects.toThrow("payload version is invalid");
 	});
 
 	test("verifyCallbackEnvelope rejects wrong expected request hash and network", async () => {
