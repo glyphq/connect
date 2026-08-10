@@ -1,5 +1,5 @@
 export const GLYPH_DEEP_LINK_SCHEME = "glyph";
-export const GLYPH_DEEP_LINK_PREFIX = `${GLYPH_DEEP_LINK_SCHEME}://v1/request`;
+export const GLYPH_DEEP_LINK_PREFIX = `${GLYPH_DEEP_LINK_SCHEME}://v2/request`;
 export const GLYPH_RESULT_CHANNEL_PREFIX = "glyph:result:";
 export const DEFAULT_GLYPH_CALLBACK_PATH = "/__glyph__";
 
@@ -69,13 +69,28 @@ export type GlyphRequest =
 	| GlyphVerifyMessageRequest
 	| GlyphConnectRequest;
 
+export const GLYPH_REQUEST_ENVELOPE_PROTOCOL = "glyph-connect-request/2";
+
+export type GlyphKnownNetworkId = "qubic:mainnet" | "qubic:testnet";
+export type GlyphCustomNetworkId = `qubic:custom:sha256:${string}`;
+export type GlyphNetworkId = GlyphKnownNetworkId | GlyphCustomNetworkId;
+
+export interface GlyphNetworkBinding { id: GlyphNetworkId }
+export interface GlyphCustomNetworkRpc { [key: string]: unknown }
+
+export const GLYPH_MAINNET: GlyphNetworkBinding = Object.freeze({ id: "qubic:mainnet" });
+export const GLYPH_TESTNET: GlyphNetworkBinding = Object.freeze({ id: "qubic:testnet" });
+
 export interface GlyphEnvelope {
+    protocol: typeof GLYPH_REQUEST_ENVELOPE_PROTOCOL;
 	request: GlyphRequest;
 	callback?: string | null;
 	redirect_uri?: string | null;
+	network: GlyphNetworkBinding;
+	request_hash: string;
 }
 
-export const GLYPH_CALLBACK_ENVELOPE_VERSION = "glyph-connect-callback-envelope/1";
+export const GLYPH_CALLBACK_ENVELOPE_VERSION = "glyph-connect-callback-envelope/2";
 export const GLYPH_CALLBACK_SIGNATURE_ALGORITHM = "qubic-schnorrq-sha256";
 
 export interface GlyphCallbackRelayBinding {
@@ -89,10 +104,13 @@ export interface GlyphCallbackRelayBinding {
 
 export interface GlyphCallbackSignaturePayload {
 	version: typeof GLYPH_CALLBACK_ENVELOPE_VERSION;
+	request_hash: string;
+	network: GlyphNetworkBinding;
 	nonce: string;
 	dapp_origin: string;
 	request_type: GlyphRequestType;
 	exp: number | null;
+	issued_at: number;
 	result_hash: string;
 	relay: GlyphCallbackRelayBinding;
 }
@@ -112,6 +130,8 @@ export interface GlyphSignedCallbackEnvelope {
 
 export interface GlyphCallbackVerificationOptions {
 	expected?: GlyphExpectedCallback;
+	expectedRequestHash?: string;
+	expectedNetwork?: GlyphNetworkBinding;
 	/** Expected dapp.origin bound into the signed callback payload. */
 	expectedDappOrigin?: string;
 	/** Expected request exp bound into the signed callback payload. Use null when absent. */
@@ -289,6 +309,51 @@ export function base64UrlToString(value: string): string {
 function isJsonObject(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
+
+// RFC8785/JCS-compatible canonical JSON for protocol hashes. It rejects values
+// that cannot be represented in I-JSON and emits object members in deterministic
+// UTF-16 key order, matching ECMAScript/RFC8785 sorting for JSON strings.
+export function canonicalJson(value: unknown): string {
+	if (value === null) return "null";
+	if (typeof value === "string") return JSON.stringify(value);
+	if (typeof value === "boolean") return value ? "true" : "false";
+	if (typeof value === "number") {
+		if (!Number.isFinite(value)) throw new Error("Canonical JSON cannot encode non-finite numbers");
+		return JSON.stringify(value);
+	}
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		return `{${Object.keys(record).sort().map((key) => {
+			const item = record[key];
+			if (item === undefined || typeof item === "function" || typeof item === "symbol" || typeof item === "bigint") {
+				throw new Error("Canonical JSON cannot encode unsupported values");
+			}
+			return `${JSON.stringify(key)}:${canonicalJson(item)}`;
+		}).join(",")}}`;
+	}
+	throw new Error("Canonical JSON cannot encode unsupported values");
+}
+
+function rotr(n: number, x: number): number { return (x >>> n) | (x << (32 - n)); }
+function sha256(bytes: Uint8Array): Uint8Array {
+	const k = [1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298];
+	const h = [1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225];
+	const bitLen = bytes.length * 8; const len = (((bytes.length + 9 + 63) >> 6) << 6); const m = new Uint8Array(len); m.set(bytes); m[bytes.length] = 0x80;
+	new DataView(m.buffer).setUint32(len - 4, bitLen, false);
+	const w = new Uint32Array(64);
+	for (let i = 0; i < len; i += 64) {
+		const v = new DataView(m.buffer, i, 64); for (let t = 0; t < 16; t++) w[t] = v.getUint32(t * 4, false);
+		for (let t = 16; t < 64; t++) { const wm15 = w[t-15]!; const wm2 = w[t-2]!; const s0 = rotr(7,wm15) ^ rotr(18,wm15) ^ (wm15 >>> 3); const s1 = rotr(17,wm2) ^ rotr(19,wm2) ^ (wm2 >>> 10); w[t] = (w[t-16]! + s0 + w[t-7]! + s1) >>> 0; }
+		let a = h[0]!, b = h[1]!, c = h[2]!, d = h[3]!, e = h[4]!, f = h[5]!, g = h[6]!, hh = h[7]!;
+		for (let t = 0; t < 64; t++) { const S1 = rotr(6,e) ^ rotr(11,e) ^ rotr(25,e); const ch = (e & f) ^ (~e & g); const temp1 = (hh + S1 + ch + k[t]! + w[t]!) >>> 0; const S0 = rotr(2,a) ^ rotr(13,a) ^ rotr(22,a); const maj = (a & b) ^ (a & c) ^ (b & c); const temp2 = (S0 + maj) >>> 0; hh = g; g = f; f = e; e = (d + temp1) >>> 0; d = c; c = b; b = a; a = (temp1 + temp2) >>> 0; }
+		h[0]=(h[0]!+a)>>>0; h[1]=(h[1]!+b)>>>0; h[2]=(h[2]!+c)>>>0; h[3]=(h[3]!+d)>>>0; h[4]=(h[4]!+e)>>>0; h[5]=(h[5]!+f)>>>0; h[6]=(h[6]!+g)>>>0; h[7]=(h[7]!+hh)>>>0;
+	}
+	const out = new Uint8Array(32); const dv = new DataView(out.buffer); h.forEach((x,i)=>dv.setUint32(i*4,x,false)); return out;
+}
+
+export function sha256Base64UrlSync(input: string): string { return bytesToBase64Url(sha256(new TextEncoder().encode(input))); }
+export function sha256CanonicalJson(value: unknown): string { return `sha256:${sha256Base64UrlSync(canonicalJson(value))}`; }
 
 // ── Validation helpers ─────────────────────────────────────────────────────────
 
@@ -677,26 +742,56 @@ export function createConnectRequest(
 
 // ── Envelope ───────────────────────────────────────────────────────────────────
 
-function normalizeEnvelope(envelope: GlyphEnvelope): GlyphEnvelope {
+export function createCustomNetworkBinding(rpc: GlyphCustomNetworkRpc): GlyphNetworkBinding {
+	return { id: `qubic:custom:${sha256CanonicalJson(rpc)}` as GlyphCustomNetworkId };
+}
+
+function validateNetworkBinding(network: GlyphNetworkBinding): GlyphNetworkBinding {
+	if (!isJsonObject(network) || typeof network.id !== "string") throw new Error("network binding must include an id");
+	if (network.id === "qubic:mainnet" || network.id === "qubic:testnet" || /^qubic:custom:sha256:[A-Za-z0-9_-]{43}$/.test(network.id)) return { id: network.id as GlyphNetworkId };
+	throw new Error("network id is invalid");
+}
+
+export function requestHashInput(envelope: Pick<GlyphEnvelope, "protocol" | "request" | "callback" | "redirect_uri" | "network">): Pick<GlyphEnvelope, "protocol" | "request" | "callback" | "redirect_uri" | "network"> {
+	return {
+		protocol: envelope.protocol,
+		request: envelope.request,
+		callback: envelope.callback ?? null,
+		redirect_uri: envelope.redirect_uri ?? null,
+		network: envelope.network,
+	};
+}
+
+export function computeRequestHash(envelope: Pick<GlyphEnvelope, "protocol" | "request" | "callback" | "redirect_uri" | "network">): string {
+	return sha256CanonicalJson(requestHashInput(envelope));
+}
+
+function normalizeEnvelope(envelope: Partial<GlyphEnvelope> & { request: GlyphRequest }): GlyphEnvelope {
 	const request = validateGlyphRequest(envelope.request);
 	const claimedOrigin = request.dapp.origin;
 	if (envelope.callback) assertAllowedDeliveryUrl(envelope.callback, "callback", claimedOrigin);
 	if (envelope.redirect_uri) assertAllowedDeliveryUrl(envelope.redirect_uri, "redirect_uri", claimedOrigin);
-	return {
+	const normalized: Pick<GlyphEnvelope, "protocol" | "request" | "callback" | "redirect_uri" | "network"> = {
+		protocol: GLYPH_REQUEST_ENVELOPE_PROTOCOL,
 		request,
 		callback: envelope.callback ?? null,
 		redirect_uri: envelope.redirect_uri ?? null,
+		network: validateNetworkBinding(envelope.network ?? GLYPH_MAINNET),
 	};
+	const request_hash = computeRequestHash(normalized);
+	if (envelope.request_hash !== undefined && envelope.request_hash !== request_hash) throw new Error("request_hash does not match envelope");
+	return { ...normalized, request_hash };
 }
 
 export function createEnvelope(
 	request: GlyphRequest,
-	options: { callback?: string | null; redirect_uri?: string | null } = {},
+	options: { callback?: string | null; redirect_uri?: string | null; network?: GlyphNetworkBinding } = {},
 ): GlyphEnvelope {
 	return normalizeEnvelope({
 		request,
 		callback: options.callback ?? null,
 		redirect_uri: options.redirect_uri ?? null,
+		network: options.network ?? GLYPH_MAINNET,
 	});
 }
 
@@ -994,11 +1089,20 @@ export async function verifyCallbackEnvelope(
 
 	const result = parseCallbackResponse(body.result, options.expected);
 	if (body.payload.version !== GLYPH_CALLBACK_ENVELOPE_VERSION) throw new Error("Callback payload version is invalid");
+	if (typeof body.payload.request_hash !== "string" || !body.payload.request_hash.startsWith("sha256:")) throw new Error("Callback payload request_hash is invalid");
+	validateNetworkBinding(body.payload.network);
 	if (body.payload.nonce !== result.nonce) throw new Error("Callback payload nonce does not match result nonce");
 	if (body.payload.request_type !== result.type) throw new Error("Callback payload request type does not match result type");
 	if (typeof body.payload.dapp_origin !== "string") throw new Error("Callback payload dapp_origin is invalid");
 	if (body.payload.exp !== null && !Number.isSafeInteger(body.payload.exp)) throw new Error("Callback payload exp is invalid");
+	if (!Number.isSafeInteger(body.payload.issued_at)) throw new Error("Callback payload issued_at is invalid");
 	assertCallbackRelayBinding(body.payload.relay);
+	if (options.expectedRequestHash !== undefined && body.payload.request_hash !== options.expectedRequestHash) {
+		throw new Error("Callback payload request_hash does not match expected request");
+	}
+	if (options.expectedNetwork !== undefined && body.payload.network.id !== validateNetworkBinding(options.expectedNetwork).id) {
+		throw new Error("Callback payload network does not match expected network");
+	}
 	if (options.expectedDappOrigin !== undefined && body.payload.dapp_origin !== canonicalDappOrigin(options.expectedDappOrigin)) {
 		throw new Error("Callback payload dapp_origin does not match expected origin");
 	}
@@ -1008,8 +1112,8 @@ export async function verifyCallbackEnvelope(
 	if (options.expectedCallbackUrl !== undefined && body.payload.relay.callback_url !== options.expectedCallbackUrl) {
 		throw new Error("Callback payload relay callback_url does not match expected callback URL");
 	}
-	if (body.proof.signed_payload !== canonicalize(body.payload)) throw new Error("Callback signed_payload is not canonical");
-	if (body.payload.result_hash !== await sha256Base64Url(canonicalize(body.result))) {
+	if (body.proof.signed_payload !== canonicalJson(body.payload)) throw new Error("Callback signed_payload is not canonical");
+	if (body.payload.result_hash !== sha256CanonicalJson(body.result)) {
 		throw new Error("Callback payload result_hash does not match result");
 	}
 	const signature = base64ToBytes(body.proof.signature);

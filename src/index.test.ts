@@ -1,13 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
 	base64UrlToString,
 	buildGlyphUrl,
+	canonicalJson,
+	computeRequestHash,
 	createConnectRequest,
+	createCustomNetworkBinding,
 	createEnvelope,
 	createTransferRequest,
 	handleRedirect,
 	isAllowedCallbackUrl,
 	parseCallbackResponse,
+	sha256CanonicalJson,
 	glyphRequest,
 } from "./index";
 
@@ -18,6 +23,18 @@ function decodeEnvelope(url: string): unknown {
 }
 
 describe("@glyph-oss/connect", () => {
+	test("matches cross-language deep-link v2 fixture vectors", () => {
+		const fixture = JSON.parse(readFileSync("fixtures/deeplink-v2-vectors.json", "utf8"));
+		expect(canonicalJson(fixture.canonical_json.input)).toBe(fixture.canonical_json.canonical);
+		expect(sha256CanonicalJson(fixture.canonical_json.input)).toBe(fixture.canonical_json.sha256);
+		expect(createCustomNetworkBinding(fixture.custom_network_rpc)).toEqual(fixture.custom_network);
+		expect(computeRequestHash(fixture.request_hash_input)).toBe(fixture.request_hash);
+		expect(createEnvelope(fixture.request_envelope.request, {
+			redirect_uri: fixture.request_envelope.redirect_uri,
+			network: fixture.request_envelope.network,
+		})).toEqual(fixture.request_envelope);
+	});
+
 	// ── URL building ───────────────────────────────────────────────────────────
 
 	test("builds a Glyph URL with a callback envelope", () => {
@@ -28,7 +45,7 @@ describe("@glyph-oss/connect", () => {
 			amount: "1000",
 		});
 		const url = buildGlyphUrl(createEnvelope(request, { callback: "https://demo.app/callback" }));
-		expect(url.startsWith("glyph://v1/request?d=")).toBe(true);
+		expect(url.startsWith("glyph://v2/request?d=")).toBe(true);
 		expect(new URL(url.replace("glyph:", "https:")).searchParams.get("cb")).toBeNull();
 	});
 
@@ -40,8 +57,11 @@ describe("@glyph-oss/connect", () => {
 		const url = buildGlyphUrl(
 			createEnvelope(request, { redirect_uri: "https://demo.app/__glyph__" }),
 		);
-		expect(url.startsWith("glyph://v1/request?d=")).toBe(true);
-		const envelope = decodeEnvelope(url) as { redirect_uri?: string };
+		expect(url.startsWith("glyph://v2/request?d=")).toBe(true);
+		const envelope = decodeEnvelope(url) as { protocol: string; request_hash: string; network: { id: string }; redirect_uri?: string };
+		expect(envelope.protocol).toBe("glyph-connect-request/2");
+		expect(envelope.network.id).toBe("qubic:mainnet");
+		expect(envelope.request_hash.startsWith("sha256:")).toBe(true);
 		expect(envelope.redirect_uri).toBe("https://demo.app/__glyph__");
 	});
 
