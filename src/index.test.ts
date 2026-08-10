@@ -51,7 +51,7 @@ describe("@glyph-oss/connect", () => {
 			expect(isAllowedCallbackUrl("https://demo.app/cb", "https://demo.app")).toBe(true);
 			expect(
 				isAllowedCallbackUrl(
-					"https://relay.glyphq.org/v1/callback/3dd2842cbb7f42a79354df9ddf6542ae",
+					"https://relay.glyphq.org/v2/callback/3dd2842cbb7f42a79354df9ddf6542ae/c_4dd2842cbb7f42a79354df9ddf6542ae",
 					"https://demo.app",
 				),
 			).toBe(true);
@@ -62,7 +62,13 @@ describe("@glyph-oss/connect", () => {
 			expect(isAllowedCallbackUrl("https://attacker.example/cb", "https://demo.app")).toBe(false);
 			expect(
 				isAllowedCallbackUrl(
-					"https://relay.glyphq.org/v1/stream/3dd2842cbb7f42a79354df9ddf6542ae",
+					"https://relay.glyphq.org/v2/stream/3dd2842cbb7f42a79354df9ddf6542ae/r_4dd2842cbb7f42a79354df9ddf6542ae",
+					"https://demo.app",
+				),
+			).toBe(false);
+			expect(
+				isAllowedCallbackUrl(
+					"https://relay.glyphq.org/v1/callback/3dd2842cbb7f42a79354df9ddf6542ae",
 					"https://demo.app",
 				),
 			).toBe(false);

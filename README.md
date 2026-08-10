@@ -143,46 +143,7 @@ handleRedirect();
 
 `glyphRequest()` opens Glyph, waits on `BroadcastChannel`, and accepts a broadcast only when the result matches the request nonce and type.
 
-## Legacy Relay v1 helpers
-
-The `subscribeViaRelay()` and `relayCallbackUrl()` helpers are retained for older wallet/relay deployments. They use `/v1/stream/:nonce` and `/v1/callback/:nonce` and are not the primary flow for the secure relay. Use the v2 prepared session API below for current relay-compatible integrations.
-
-```
-dApp ──── glyph:// deep link ──────→ wallet (Tauri)
-dApp ←── SSE /v1/stream/:nonce ──── relay ←── POST /v1/callback/:nonce ── wallet
-```
-
-```ts
-import {
-  createTransferRequest,
-  createEnvelope,
-  launchGlyphRequest,
-  subscribeViaRelay,
-  relayCallbackUrl,
-} from "@glyph-oss/connect";
-
-const request = createTransferRequest({
-  type: "transfer",
-  dapp: { name: "My App", origin: "https://my.app" },
-  to: "UVYAOYTNYCRBVFBHNFIJUEOUEPEDIDUWWEAXKFSJEBJVASCQEROJOVOEEATL",
-  amount: "1000",
-});
-
-// Bind the relay callback path and SSE stream to the same request nonce.
-const resultPromise = subscribeViaRelay(request, {
-  onStatus(status) {
-    if (status.state === "awaiting_approval") showMessage("Continue in Glyph Wallet");
-  },
-});
-const envelope = createEnvelope(request, { callback: relayCallbackUrl(request.nonce) });
-
-launchGlyphRequest(envelope);
-const result = await resultPromise;
-```
-
-`subscribeViaRelay()` uses streaming `fetch` and a standards-compliant SSE parser, including CRLF and multi-line `data:` fields. Custom relay origins are rejected because the wallet only treats the official relay callback as a trusted cross-origin delivery URL.
-
-### Secure relay v2 capabilities
+## Secure relay capabilities
 
 The next relay protocol splits write and read authority. Use a callback capability only in the wallet callback URL, and keep the read capability only in your dApp process:
 
@@ -213,9 +174,8 @@ The SDK mirrors wallet `deep_link.rs` policy:
 - `dapp.origin` must be a credential-free canonical HTTPS origin with no path, query, or fragment.
 - Delivery URLs must use HTTPS, must not embed credentials, and must not target localhost, private, reserved, multicast, documentation, or otherwise non-global IP literals.
 - `callback` and `redirect_uri` must match `dapp.origin`.
-- The only cross-origin `callback` exception is `https://relay.glyphq.org/v1/callback/:nonce` with a bounded relay nonce. `redirect_uri` has no relay exception.
-- Secure relay v2 callback URLs are `https://relay.glyphq.org/v2/callback/:session/:callbackCap`, with `callbackCap` prefixed by `c_`. Read URLs use a separate `r_` read capability and are not valid delivery URLs.
-- Relay callback and stream nonce path segments must be 16 to 128 characters using only `A-Z`, `a-z`, `0-9`, `-`, and `_`.
+- The only cross-origin `callback` exception is a secure relay v2 callback URL: `https://relay.glyphq.org/v2/callback/:session/:callbackCap`, with `callbackCap` prefixed by `c_`. `redirect_uri` has no relay exception.
+- Read URLs use a separate `r_` read capability and are not valid delivery URLs.
 - Callback and relay results are rejected when the result nonce or request type does not match the expected request.
 - Signed callback envelopes should be verified with `verifyCallbackEnvelope()` and a trusted wallet callback verification key. The SDK performs strict parser and binding checks, then calls your injected Qubic SchnorrQ verifier for the cryptographic signature check.
 
@@ -228,7 +188,7 @@ The SDK mirrors wallet `deep_link.rs` policy:
 `createTransferRequest` · `createScCallRequest` · `createSignMessageRequest` · `createVerifyMessageRequest` · `createConnectRequest`
 
 **Relay client**
-`subscribeViaRelay` · `subscribeViaRelayV2` · `relayCallbackUrl` · `createRelayCapabilities` · `relayUrls` · `registerRelaySession` · `prepareRelaySession`
+`subscribeViaRelayV2` · `createRelayCapabilities` · `relayUrls` · `registerRelaySession` · `prepareRelaySession`
 
 **Utilities**
 `createNonce` · `createExpiry` · `withRequestDefaults` · `validateGlyphRequest` · `canonicalDappOrigin` · `isAllowedCallbackUrl` · `isAllowedDeliveryUrl` · `isOfficialRelayCallbackUrl` · `base64UrlToString` · `base64UrlToByteArray` · `parseCallbackResponse` · `verifyCallbackEnvelope` · `isSignedCallbackEnvelope`
