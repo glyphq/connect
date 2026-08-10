@@ -91,7 +91,6 @@ export interface GlyphEnvelope {
 }
 
 export const GLYPH_CALLBACK_ENVELOPE_VERSION = "glyph-connect-callback-envelope/2";
-export const GLYPH_CALLBACK_PAYLOAD_VERSION = 2;
 export const GLYPH_CALLBACK_SIGNATURE_ALGORITHM = "qubic-schnorrq-sha256";
 
 export interface GlyphCallbackRelayBinding {
@@ -104,7 +103,7 @@ export interface GlyphCallbackRelayBinding {
 }
 
 export interface GlyphCallbackSignaturePayload {
-	version: typeof GLYPH_CALLBACK_PAYLOAD_VERSION;
+	version: typeof GLYPH_CALLBACK_ENVELOPE_VERSION;
 	request_hash: string;
 	network: GlyphNetworkBinding;
 	nonce: string;
@@ -1125,7 +1124,7 @@ export async function verifyCallbackEnvelope(
 	}
 
 	const result = parseCallbackResponse(body.result, options.expected);
-	if (body.payload.version !== GLYPH_CALLBACK_PAYLOAD_VERSION) throw new Error("Callback payload version is invalid");
+	if (body.payload.version !== GLYPH_CALLBACK_ENVELOPE_VERSION) throw new Error("Callback payload version is invalid");
 	if (typeof body.payload.request_hash !== "string" || !body.payload.request_hash.startsWith("sha256:")) throw new Error("Callback payload request_hash is invalid");
 	validateNetworkBinding(body.payload.network);
 	if (body.payload.nonce !== result.nonce) throw new Error("Callback payload nonce does not match result nonce");

@@ -33,7 +33,7 @@ function b64(value: string): string {
 
 function signedEnvelope(result: GlyphCallbackResponse, overrides: Record<string, unknown> = {}) {
 	const payload = {
-		version: 2 as const,
+		version: "glyph-connect-callback-envelope/2" as const,
 		request_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		network: { id: "qubic:mainnet" as const },
 		nonce: result.nonce,
@@ -166,9 +166,64 @@ describe("relay client", () => {
 		await expect(verifyCallbackEnvelope(result, { verifySignature: () => true })).rejects.toThrow("signed Glyph callback envelope");
 	});
 
-	test("verifyCallbackEnvelope requires numeric v2 payload version", async () => {
+	test("verifyCallbackEnvelope requires string v2 payload version", async () => {
 		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("payload-version"), identity: "AAAA", permissions: ["transfer"] };
-		await expect(verifyCallbackEnvelope(signedEnvelope(result, { version: "glyph-connect-callback-envelope/2" }), { verifySignature: () => true })).rejects.toThrow("payload version is invalid");
+		await expect(verifyCallbackEnvelope(signedEnvelope(result, { version: 2 }), { verifySignature: () => true })).rejects.toThrow("payload version is invalid");
+	});
+
+	test("verifyCallbackEnvelope accepts exact Wallet signed envelope shape including rejection", async () => {
+		const result: GlyphCallbackResponse = {
+			status: "rejected",
+			type: "connect",
+			nonce: "wallet_fixture_nonce_0123456789abcdef",
+			reason: "user_rejected",
+		};
+		const payload = {
+			version: "glyph-connect-callback-envelope/2" as const,
+			request_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			network: { id: "qubic:mainnet" as const },
+			nonce: result.nonce,
+			dapp_origin: "https://demo.app",
+			request_type: "connect" as const,
+			exp: null,
+			issued_at: 1720000000,
+			result_hash: sha256CanonicalJson(result),
+			relay: {
+				callback_url: "https://relay.glyphq.org/v2/callback/s_123/c_456",
+				official_relay: true,
+				route: "v2_session_callback" as const,
+				v1_nonce: null,
+				session_id: "s_123",
+				callback_capability_fingerprint: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+			},
+		};
+		const walletEnvelope = {
+			version: "glyph-connect-callback-envelope/2" as const,
+			result,
+			payload,
+			proof: {
+				algorithm: "qubic-schnorrq-sha256" as const,
+				identity: "wallet-identity",
+				public_key: b64("wallet-public-key"),
+				signature: b64("wallet-signature"),
+				signed_payload: canonicalJson(payload),
+			},
+		};
+
+		await expect(verifyCallbackEnvelope(walletEnvelope, {
+			expected: { nonce: result.nonce, type: "connect" },
+			expectedRequestHash: payload.request_hash,
+			expectedNetwork: payload.network,
+			expectedDappOrigin: "https://demo.app",
+			expectedExp: null,
+			expectedCallbackUrl: payload.relay.callback_url,
+			trustedPublicKeys: [walletEnvelope.proof.public_key],
+			verifySignature(input) {
+				expect(input.envelope).toBe(walletEnvelope);
+				expect(new TextDecoder().decode(input.payload)).toBe(walletEnvelope.proof.signed_payload);
+				return true;
+			},
+		})).resolves.toEqual(result);
 	});
 
 	test("verifyCallbackEnvelope rejects wrong expected request hash and network", async () => {
