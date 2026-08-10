@@ -226,6 +226,84 @@ describe("relay client", () => {
 		})).resolves.toEqual(result);
 	});
 
+	test("verifyCallbackEnvelope accepts Wallet's sanitized official v2 callback binding", async () => {
+		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("v2-callback"), identity: "AAAA", permissions: ["transfer"] };
+		const session = "session_1234567890abcdef";
+		const callbackCap = "c_callbackCapabilitySecret_1234567890abcdef";
+		const callbackUrl = `https://relay.glyphq.org/v2/callback/${session}/${callbackCap}`;
+		const callbackCapabilityFingerprint = await sha256Base64Url(callbackCap);
+		const envelope = signedEnvelope(result, {
+			relay: {
+				callback_url: `https://relay.glyphq.org/v2/callback/${session}/${callbackCapabilityFingerprint}`,
+				official_relay: true,
+				route: "v2_session_callback" as const,
+				v1_nonce: null,
+				session_id: session,
+				callback_capability_fingerprint: callbackCapabilityFingerprint,
+			},
+		});
+
+		expect(envelope.proof.signed_payload).not.toContain(callbackCap);
+		await expect(verifyCallbackEnvelope(envelope, {
+			expected: { nonce: result.nonce, type: result.type },
+			expectedCallbackUrl: callbackUrl,
+			verifySignature: () => true,
+		})).resolves.toEqual(result);
+		await expect(verifyCallbackEnvelope(signedEnvelope(result, {
+			relay: {
+				callback_url: callbackUrl,
+				official_relay: true,
+				route: "v2_session_callback" as const,
+				v1_nonce: null,
+				session_id: session,
+				callback_capability_fingerprint: callbackCapabilityFingerprint,
+			},
+		}), {
+			expectedCallbackUrl: callbackUrl,
+			verifySignature: () => true,
+		})).rejects.toThrow("callback_url does not match");
+		await expect(verifyCallbackEnvelope(envelope, {
+			expectedCallbackUrl: `https://relay.glyphq.org/v2/callback/${session}/c_wrongCallbackCapability_1234567890abcdef`,
+			verifySignature: () => true,
+		})).rejects.toThrow("callback_url does not match");
+		await expect(verifyCallbackEnvelope(envelope, {
+			expectedCallbackUrl: `https://relay.glyphq.org/v2/callback/session_wrong_1234567890abcdef/${callbackCap}`,
+			verifySignature: () => true,
+		})).rejects.toThrow("callback_url does not match");
+	});
+
+	test("verifyCallbackEnvelope keeps legacy and nonrelay callback bindings strict", async () => {
+		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("raw-callback"), identity: "AAAA", permissions: ["transfer"] };
+		for (const relay of [
+			{
+				callback_url: "https://relay.glyphq.org/v1/callback/legacy_nonce_1234567890abcdef",
+				official_relay: true,
+				route: "v1_callback" as const,
+				v1_nonce: "legacy_nonce_1234567890abcdef",
+				session_id: null,
+				callback_capability_fingerprint: null,
+			},
+			{
+				callback_url: "https://demo.app/callback",
+				official_relay: false,
+				route: "unknown" as const,
+				v1_nonce: null,
+				session_id: null,
+				callback_capability_fingerprint: null,
+			},
+		]) {
+			const envelope = signedEnvelope(result, { relay });
+			await expect(verifyCallbackEnvelope(envelope, {
+				expectedCallbackUrl: relay.callback_url,
+				verifySignature: () => true,
+			})).resolves.toEqual(result);
+			await expect(verifyCallbackEnvelope(envelope, {
+				expectedCallbackUrl: `${relay.callback_url}/other`,
+				verifySignature: () => true,
+			})).rejects.toThrow("callback_url does not match");
+		}
+	});
+
 	test("verifyCallbackEnvelope rejects wrong expected request hash and network", async () => {
 		const result: GlyphCallbackResponse = { status: "connected", type: "connect", nonce: validNonce("wrong"), identity: "AAAA", permissions: ["transfer"] };
 		const envelope = signedEnvelope(result);
