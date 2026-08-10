@@ -1,5 +1,11 @@
 # @glyph-oss/connect
 
+## 2.2.1
+
+### Patch Changes
+
+- 8413b87: Harden SDK protocol validation, relay result handling, package ESM imports, and release checks to mirror wallet delivery policy.
+
 ## 2.2.0
 
 ### Minor Changes
