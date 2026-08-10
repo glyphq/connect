@@ -14,7 +14,7 @@ Framework-agnostic · Zero runtime dependencies · Fully typed
 
 ---
 
-Build and dispatch `glyph://` requests to the [Glyph desktop wallet](https://github.com/glyphq/wallet) from any web app, dApp, or toolchain. Learn more at [glyphq.org](https://glyphq.org).
+Build and dispatch `glyph://` requests to the [Glyph desktop wallet](https://github.com/glyphq/wallet) from web apps, dApps, and JavaScript toolchains. Learn more at [glyphq.org](https://glyphq.org).
 
 ## Install
 
@@ -23,6 +23,8 @@ bun add @glyph-oss/connect
 # or
 npm install @glyph-oss/connect
 ```
+
+The package is published as Node-compatible ESM and supports Node 18+ for non-browser helpers. Browser launch helpers require `window`.
 
 ## Quick Start
 
@@ -40,12 +42,7 @@ const envelope = createEnvelope(request, {
   callback: "https://my.app/api/glyph/callback",
 });
 
-// Build the deep-link URL.
 const url = buildGlyphUrl(envelope);
-
-// Or launch directly in a browser.
-import { launchGlyphRequest } from "@glyph-oss/connect";
-launchGlyphRequest(envelope);
 ```
 
 ## Request Types
@@ -58,7 +55,7 @@ launchGlyphRequest(envelope);
 | `createVerifyMessageRequest()` | Verify an existing signature bundle |
 | `createConnectRequest()` | Request a wallet session with permissions |
 
-All builders require an HTTPS `dapp.origin`, then generate a nonce and expiry by default.
+Builders generate a 16 to 128 character nonce and five minute expiry by default. Expiry is capped at one hour to match the wallet replay window.
 
 ## Envelope Model
 
@@ -66,9 +63,9 @@ Requests are wrapped in an envelope before encoding into the deep-link URL:
 
 ```ts
 interface GlyphEnvelope {
-  request: GlyphRequest;       // discriminated union on "type"
-  callback?: string | null;    // optional server delivery URL
-  redirect_uri?: string | null; // optional browser result URL
+  request: GlyphRequest;
+  callback?: string | null;
+  redirect_uri?: string | null;
 }
 ```
 
@@ -77,38 +74,27 @@ const envelope = createEnvelope(request, { callback: "https://my.app/api/callbac
 const url = buildGlyphUrl(envelope);
 ```
 
-Deep links target `glyph://v1/request?d=<base64url envelope>`.
+Deep links target `glyph://v1/request?d=<base64url envelope>`. Encoded payloads are bounded to the wallet's 8192 byte base64url limit.
 
 ## Result Delivery
 
-Glyph delivers results to your app via one or both modes:
+Glyph delivers results to your app via one of these modes:
 
 | Mode | How it works |
 |---|---|
 | `callback` | Glyph POSTs a JSON result to your server after the user acts |
 | `redirect_uri` | Glyph opens `redirect_uri?result=<base64url>` in the browser |
-| relay | dApp streams the result via the [Glyph relay](https://github.com/glyphq/relay) (no server needed) |
+| relay | dApp streams the result from the official Glyph relay via SSE |
 
-Parse the callback body on your server:
+Validate server callback bodies against the expected request nonce and type:
 
 ```ts
 import { parseCallbackResponse } from "@glyph-oss/connect";
 
-const result = parseCallbackResponse(await req.json());
-
-switch (result.status) {
-  case "signed":
-    if (result.type === "transfer" || result.type === "sc_call") {
-      console.log(result.tx_hash, result.target_tick);
-    }
-    break;
-  case "connected":
-    console.log(result.identity, result.permissions);
-    break;
-  case "rejected":
-    console.log(result.reason); // "user_rejected"
-    break;
-}
+const result = parseCallbackResponse(await req.json(), {
+  nonce: request.nonce,
+  type: request.type,
+});
 ```
 
 ## Browser Promise Flow
@@ -126,27 +112,20 @@ const result = await glyphRequest(
   }),
   {
     onStatus(status) {
-      if (status.state === "awaiting_approval") {
-        showMessage("Continue in Glyph Wallet");
-      }
+      if (status.state === "awaiting_approval") showMessage("Continue in Glyph Wallet");
     },
   },
 );
 
 // On your /__glyph__ route:
-handleRedirect({
-  closeDelayMs: 1200,
-  onResult() {
-    showMessage("Request completed. Returning to the application.");
-  },
-});
+handleRedirect();
 ```
 
-`glyphRequest()` opens Glyph, reports transport-level progress, waits on `BroadcastChannel`, and resolves when the callback route broadcasts the `result` query parameter. The originating page attempts to regain focus when the browser permits it.
+`glyphRequest()` opens Glyph, waits on `BroadcastChannel`, and accepts a broadcast only when the result matches the request nonce and type.
 
 ## Relay Stream (no server required)
 
-When your dApp has no backend, use the [Glyph relay](https://github.com/glyphq/relay) to receive results via SSE. The relay is a Cloudflare Worker with Durable Objects that bridges the wallet's callback POST to a streaming response.
+When your dApp has no backend, use the official Glyph relay at `https://relay.glyphq.org` to receive results via SSE.
 
 ```
 dApp ──── glyph:// deep link ──────→ wallet (Tauri)
@@ -160,10 +139,8 @@ import {
   launchGlyphRequest,
   subscribeViaRelay,
   relayCallbackUrl,
-  createNonce,
 } from "@glyph-oss/connect";
 
-const nonce = createNonce();
 const request = createTransferRequest({
   type: "transfer",
   dapp: { name: "My App", origin: "https://my.app" },
@@ -171,26 +148,30 @@ const request = createTransferRequest({
   amount: "1000",
 });
 
-// Point the callback to the relay
-const envelope = createEnvelope(request, {
-  callback: relayCallbackUrl(nonce),
-});
-
-// Connect to the relay stream, then launch
-const resultPromise = subscribeViaRelay(nonce, {
+// Bind the relay callback path and SSE stream to the same request nonce.
+const resultPromise = subscribeViaRelay(request, {
   onStatus(status) {
-    if (status.state === "awaiting_approval") {
-      showMessage("Continue in Glyph Wallet");
-    }
+    if (status.state === "awaiting_approval") showMessage("Continue in Glyph Wallet");
   },
 });
+const envelope = createEnvelope(request, { callback: relayCallbackUrl(request.nonce) });
 
 launchGlyphRequest(envelope);
-
 const result = await resultPromise;
 ```
 
-`subscribeViaRelay()` uses `fetch` with streaming (no `EventSource` dependency), so it works in browsers, Node 18+, Bun, Deno, and service workers.
+`subscribeViaRelay()` uses streaming `fetch` and a standards-compliant SSE parser, including CRLF and multi-line `data:` fields. Custom relay origins are rejected because the wallet only treats the official relay callback as a trusted cross-origin delivery URL.
+
+## Compatibility and Security Policy
+
+The SDK mirrors wallet `deep_link.rs` policy:
+
+- `dapp.origin` must be a credential-free canonical HTTPS origin with no path, query, or fragment.
+- Delivery URLs must use HTTPS, must not embed credentials, and must not target localhost, private, reserved, multicast, documentation, or otherwise non-global IP literals.
+- `callback` and `redirect_uri` must match `dapp.origin`.
+- The only cross-origin `callback` exception is `https://relay.glyphq.org/v1/callback/:nonce` with a bounded relay nonce. `redirect_uri` has no relay exception.
+- Relay callback and stream nonce path segments must be 16 to 128 characters using only `A-Z`, `a-z`, `0-9`, `-`, and `_`.
+- Callback and relay results are rejected when the result nonce or request type does not match the expected request.
 
 ## API Reference
 
@@ -204,15 +185,7 @@ const result = await resultPromise;
 `subscribeViaRelay` · `relayCallbackUrl`
 
 **Utilities**
-`createNonce` · `createExpiry` · `withRequestDefaults` · `isAllowedCallbackUrl` · `base64UrlToString` · `parseCallbackResponse`
-
-## Constraints
-
-- `dapp.origin` must be `https://`.
-- Callback URLs must be `https://`, except `http://localhost`, `http://127.0.0.1`, and `http://[::1]`.
-- `launchGlyphRequest` and `glyphRequest` require a browser environment with `window`.
-- `subscribeViaRelay` uses `fetch` and works in any modern runtime (browsers, Node 18+, Bun, Deno, service workers).
-- Deep links target `glyph://v1/request?d=...`.
+`createNonce` · `createExpiry` · `withRequestDefaults` · `validateGlyphRequest` · `canonicalDappOrigin` · `isAllowedCallbackUrl` · `isAllowedDeliveryUrl` · `isOfficialRelayCallbackUrl` · `base64UrlToString` · `parseCallbackResponse`
 
 ## Development
 
@@ -220,6 +193,7 @@ const result = await resultPromise;
 bun install
 bun run check
 bun run audit
+bun run smoke:node-import
 ```
 
 ## License

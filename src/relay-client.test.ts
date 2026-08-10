@@ -1,234 +1,153 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import {
-  type GlyphCallbackResponse,
-} from "./index";
-import { subscribeViaRelay, relayCallbackUrl } from "./relay-client";
+import { afterEach, describe, expect, test } from "bun:test";
+import { type GlyphCallbackResponse, createConnectRequest } from "./index";
+import { parseSSEStream, relayCallbackUrl, subscribeViaRelay } from "./relay-client";
 
-// ── Inline relay for testing ───────────────────────────────────────────────
+const originalFetch = globalThis.fetch;
 
-const results = new Map<string, unknown>();
-const sseListeners = new Map<string, Set<(result: unknown) => void>>();
-
-function storeResult(nonce: string, data: unknown) {
-  results.set(nonce, data);
-  const listeners = sseListeners.get(nonce);
-  if (listeners) {
-    for (const cb of listeners) {
-      try { cb(data); } catch { /* */ }
-    }
-    sseListeners.delete(nonce);
-  }
+function validNonce(prefix = "nonce"): string {
+	return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
-function waitForResult(nonce: string): { cancel: () => void } {
-  const listeners = sseListeners.get(nonce) ?? new Set();
-  sseListeners.set(nonce, listeners);
-  const cancel = () => {
-    listeners.clear();
-    sseListeners.delete(nonce);
-  };
-  return { cancel };
+function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+			controller.close();
+		},
+	});
 }
 
-function sseEvent(data: string, event: string): Uint8Array {
-  return new TextEncoder().encode(`event: ${event}\ndata: ${data}\n\n`);
+function sseEvent(data: string, event: string, lineEnding = "\n"): string {
+	return `event: ${event}${lineEnding}data: ${data}${lineEnding}${lineEnding}`;
 }
 
-let server: ReturnType<typeof Bun.serve>;
-let baseUrl: string;
+function mockFetchWithSse(chunks: string[], assertUrl?: (url: string, init?: RequestInit) => void) {
+	globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+		assertUrl?.(String(input), init);
+		return Promise.resolve(
+			new Response(sseStream(chunks), {
+				headers: { "Content-Type": "text/event-stream" },
+			}),
+		);
+	}) as typeof fetch;
+}
 
-beforeAll(() => {
-  server = Bun.serve({
-    port: 0,
-    fetch(req) {
-      const url = new URL(req.url);
-
-      // POST /v1/callback/:nonce
-      if (req.method === "POST" && url.pathname.startsWith("/v1/callback/")) {
-        const nonce = url.pathname.slice("/v1/callback/".length);
-        return req.json().then((body) => {
-          storeResult(nonce, body);
-          return new Response(JSON.stringify({ status: "ok" }), {
-            headers: { "Content-Type": "application/json" },
-          });
-        });
-      }
-
-      // GET /v1/stream/:nonce
-      if (req.method === "GET" && url.pathname.startsWith("/v1/stream/")) {
-        const nonce = url.pathname.slice("/v1/stream/".length);
-        const stored = results.get(nonce);
-
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            if (stored !== undefined) {
-              controller.enqueue(sseEvent(JSON.stringify(stored), "result"));
-              controller.enqueue(sseEvent("", "close"));
-              controller.close();
-              return;
-            }
-
-            const timer = setTimeout(() => {
-              controller.enqueue(sseEvent(JSON.stringify({ status: "timeout" }), "timeout"));
-              controller.close();
-              cancel();
-            }, 10_000);
-
-            const { cancel } = waitForResult(nonce);
-
-            const listeners = sseListeners.get(nonce);
-            if (listeners) {
-              listeners.clear();
-              listeners.add((result: unknown) => {
-                clearTimeout(timer);
-                try {
-                  controller.enqueue(sseEvent(JSON.stringify(result), "result"));
-                  controller.enqueue(sseEvent("", "close"));
-                  controller.close();
-                } catch { /* */ }
-              });
-            }
-          },
-        });
-
-        return new Response(stream, {
-          headers: { "Content-Type": "text/event-stream" },
-        });
-      }
-
-      return new Response("Not found", { status: 404 });
-    },
-  });
-
-  baseUrl = `http://localhost:${server.port}`;
+afterEach(() => {
+	globalThis.fetch = originalFetch;
 });
-
-afterAll(() => {
-  server?.stop();
-  results.clear();
-  sseListeners.clear();
-});
-
-// ── Tests ──────────────────────────────────────────────────────────────────
 
 describe("relay client", () => {
-  test("relayCallbackUrl builds the correct path", () => {
-    expect(relayCallbackUrl("abc123", "https://relay.glyphq.org")).toBe(
-      "https://relay.glyphq.org/v1/callback/abc123",
-    );
-  });
+	test("relayCallbackUrl builds the official callback path and encodes the nonce segment", () => {
+		const nonce = validNonce("abc");
+		expect(relayCallbackUrl(nonce, "https://relay.glyphq.org/")).toBe(
+			`https://relay.glyphq.org/v1/callback/${nonce}`,
+		);
+		expect(() => relayCallbackUrl("short")).toThrow("relay nonce");
+		expect(() => relayCallbackUrl(validNonce(), "http://localhost:3000")).toThrow(
+			"relayUrl must be exactly https://relay.glyphq.org",
+		);
+	});
 
-  test("relayCallbackUrl strips trailing slashes", () => {
-    expect(relayCallbackUrl("abc", "https://relay.glyphq.org/")).toBe(
-      "https://relay.glyphq.org/v1/callback/abc",
-    );
-  });
+	test("subscribeViaRelay fetches only the official relay stream with an encoded nonce", async () => {
+		const request = createConnectRequest({
+			type: "connect",
+			dapp: { origin: "https://demo.app" },
+		});
+		const result: GlyphCallbackResponse = {
+			status: "connected",
+			type: "connect",
+			nonce: request.nonce,
+			identity: "AAAA",
+			permissions: ["transfer"],
+		};
+		mockFetchWithSse([sseEvent(JSON.stringify(result), "result")], (url, init) => {
+			expect(url).toBe(`https://relay.glyphq.org/v1/stream/${request.nonce}`);
+			expect((init?.headers as Record<string, string>).Accept).toBe("text/event-stream");
+		});
 
-  test("relayCallbackUrl uses default relay URL", () => {
-    expect(relayCallbackUrl("xyz")).toBe(
-      "https://relay.glyphq.org/v1/callback/xyz",
-    );
-  });
+		await expect(subscribeViaRelay(request, { timeoutMs: 2_000 })).resolves.toEqual(result);
+	});
 
-  test("subscribeViaRelay resolves when result arrives after subscription", async () => {
-    const nonce = `test_${crypto.randomUUID()}`;
-    const signedResult: GlyphCallbackResponse = {
-      status: "signed",
-      type: "transfer",
-      nonce,
-      identity: "AAAA",
-      tx_hash: "DEADBEEF",
-      target_tick: 42,
-    };
+	test("subscribeViaRelay rejects malformed or mismatched relay results", async () => {
+		const nonce = validNonce("mismatch");
+		mockFetchWithSse([
+			sseEvent(
+				JSON.stringify({
+					status: "connected",
+					type: "connect",
+					nonce: `${nonce}other`,
+					identity: "AAAA",
+					permissions: ["transfer"],
+				}),
+				"result",
+			),
+		]);
+		await expect(
+			subscribeViaRelay({ nonce, type: "connect" }, { timeoutMs: 2_000 }),
+		).rejects.toThrow("expected request nonce");
 
-    // Subscribe first, then post
-    const promise = subscribeViaRelay(nonce, {
-      relayUrl: baseUrl,
-      timeoutMs: 5_000,
-    });
+		mockFetchWithSse([
+			sseEvent(
+				JSON.stringify({
+					status: "signed",
+					type: "sign_message",
+					nonce,
+					identity: "AAAA",
+					signature: "sig",
+					public_key: "pk",
+				}),
+				"result",
+			),
+		]);
+		await expect(
+			subscribeViaRelay({ nonce, type: "connect" }, { timeoutMs: 2_000 }),
+		).rejects.toThrow("expected request type");
+	});
 
-    // Give the SSE connection time to establish
-    await new Promise((r) => setTimeout(r, 200));
+	test("subscribeViaRelay requires expectedType when subscribing by nonce string", () => {
+		expect(() => subscribeViaRelay(validNonce(), { timeoutMs: 10 })).toThrow("expectedType");
+	});
 
-    // Simulate wallet posting to the relay
-    await fetch(`${baseUrl}/v1/callback/${nonce}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(signedResult),
-    });
+	test("subscribeViaRelay calls onStatus with progress events", async () => {
+		const nonce = validNonce("status");
+		const statuses: string[] = [];
+		const result: GlyphCallbackResponse = {
+			status: "rejected",
+			type: "connect",
+			nonce,
+			reason: "user_rejected",
+		};
+		mockFetchWithSse([sseEvent(JSON.stringify(result), "result")]);
 
-    const result = await promise;
-    expect(result.status).toBe("signed");
-    if (result.status === "signed" && (result.type === "transfer" || result.type === "sc_call")) {
-      expect(result.tx_hash).toBe("DEADBEEF");
-      expect(result.target_tick).toBe(42);
-    }
-  });
+		await subscribeViaRelay(
+			{ nonce, type: "connect" },
+			{ timeoutMs: 2_000, onStatus: (s) => statuses.push(s.state) },
+		);
+		expect(statuses).toContain("opening_wallet");
+		expect(statuses).toContain("awaiting_approval");
+		expect(statuses).toContain("completed");
+	});
 
-  test("subscribeViaRelay resolves immediately when result already exists", async () => {
-    const nonce = `test_${crypto.randomUUID()}`;
-    const rejectedResult: GlyphCallbackResponse = {
-      status: "rejected",
-      type: "connect",
-      nonce,
-      reason: "user_rejected",
-    };
+	test("subscribeViaRelay rejects on relay timeout event", async () => {
+		const nonce = validNonce("timeout");
+		mockFetchWithSse([sseEvent(JSON.stringify({ status: "timeout" }), "timeout")]);
+		await expect(
+			subscribeViaRelay({ nonce, type: "connect" }, { timeoutMs: 2_000 }),
+		).rejects.toThrow("Relay stream timed out");
+	});
 
-    // Post first, then subscribe
-    await fetch(`${baseUrl}/v1/callback/${nonce}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(rejectedResult),
-    });
-
-    const result = await subscribeViaRelay(nonce, {
-      relayUrl: baseUrl,
-      timeoutMs: 3_000,
-    });
-
-    expect(result.status).toBe("rejected");
-    if (result.status === "rejected") {
-      expect(result.reason).toBe("user_rejected");
-    }
-  });
-
-  test("subscribeViaRelay calls onStatus with progress events", async () => {
-    const nonce = `test_${crypto.randomUUID()}`;
-    const statuses: string[] = [];
-
-    const promise = subscribeViaRelay(nonce, {
-      relayUrl: baseUrl,
-      timeoutMs: 5_000,
-      onStatus: (s) => statuses.push(s.state),
-    });
-
-    await new Promise((r) => setTimeout(r, 200));
-
-    await fetch(`${baseUrl}/v1/callback/${nonce}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        status: "signed",
-        type: "transfer",
-        nonce,
-        identity: "AAAA",
-        tx_hash: "HASH",
-        target_tick: 1,
-      }),
-    });
-
-    await promise;
-    expect(statuses).toContain("opening_wallet");
-    expect(statuses).toContain("completed");
-  });
-
-  test("subscribeViaRelay rejects on timeout", async () => {
-    const nonce = `test_timeout_${crypto.randomUUID()}`;
-    await expect(
-      subscribeViaRelay(nonce, {
-        relayUrl: baseUrl,
-        timeoutMs: 200,
-      }),
-    ).rejects.toThrow("Relay stream timed out");
-  });
+	test("parseSSEStream handles CRLF and multi-data events", async () => {
+		const events = [] as Array<{ event: string; data: string }>;
+		for await (const event of parseSSEStream(
+			sseStream([
+				": keepalive\r\n",
+				"event: result\r\n",
+				"data: {\"a\":1,\r\n",
+				"data: \"b\":2}\r\n\r\n",
+			]),
+		)) {
+			events.push(event);
+		}
+		expect(events).toEqual([{ event: "result", data: '{"a":1,\n"b":2}' }]);
+	});
 });
