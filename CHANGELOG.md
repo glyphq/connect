@@ -1,5 +1,11 @@
 # @glyph-oss/connect
 
+## 4.0.1
+
+### Patch Changes
+
+- e276e58: Canonicalize official Relay v2 callback expectations to Wallet's capability-safe signed binding.
+
 ## 4.0.0
 
 ### Major Changes
