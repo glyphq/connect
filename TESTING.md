@@ -85,8 +85,8 @@ Verify:
 
 Verify:
 
-- `relayCallbackUrl()` accepts only the official relay origin and encodes a valid nonce path segment
-- relay stream subscriptions target only `https://relay.glyphq.org/v1/stream/:nonce`
+- secure relay v2 sessions split callback and read capabilities and register before streaming
+- secure relay v2 stream subscriptions target only the prepared session read-capability URL
 - subscribing by nonce string requires `expectedType`, or callers pass the request object directly
 - relay results are parsed and then checked against the expected nonce and request type
 - malformed JSON, malformed callback bodies, mismatched nonce, and mismatched type reject
@@ -104,7 +104,7 @@ At minimum:
 2. Open it against Glyph.
 3. Confirm Glyph shows the request review screen.
 4. Repeat for `connect`, `sign_message`, `verify_message`, and `sc_call` where possible.
-5. Generate a relay-backed callback with `relayCallbackUrl(request.nonce)` and confirm the wallet accepts only the official relay callback route.
+5. Generate a relay-backed callback with `prepareRelaySession()` and confirm the wallet accepts only the secure v2 callback capability route.
 
 If Glyph rejects the payload, do not ship until the package and wallet are back in sync.
 

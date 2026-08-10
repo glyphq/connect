@@ -37,7 +37,7 @@ try {
 		smoke,
 		`import * as glyph from "@glyph-oss/connect";\n` +
 			`if (typeof glyph.createNonce !== "function") throw new Error("missing createNonce export");\n` +
-			`if (typeof glyph.relayCallbackUrl !== "function") throw new Error("missing relayCallbackUrl export");\n` +
+			`if (typeof glyph.prepareRelaySession !== "function") throw new Error("missing prepareRelaySession export");\n` +
 			`console.log("node esm import ok", Object.keys(glyph).length);\n`,
 	);
 	const output = run(process.execPath, [smoke], { cwd: temp });
