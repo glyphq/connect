@@ -222,6 +222,8 @@ export interface GlyphAsyncOptions {
 	focusOnResult?: boolean;
 	/** Receives transport-level progress for rendering request feedback. */
 	onStatus?: (status: GlyphRequestStatus) => void;
+	/** Verification options for signed v2 callback envelopes. */
+	verification?: Omit<GlyphCallbackVerificationOptions, "expected">;
 }
 
 export type GlyphRequestStatus =
@@ -241,6 +243,8 @@ export interface GlyphRedirectOptions {
 	onResult?: (result: GlyphCallbackResponse) => void;
 	/** Called when the result query parameter cannot be parsed. */
 	onError?: (error: Error) => void;
+	/** Verification options for signed v2 callback envelopes. */
+	verification?: GlyphCallbackVerificationOptions;
 }
 
 export type GlyphRedirectResult =
@@ -881,9 +885,9 @@ export async function glyphRequest(
 			fail(new Error("Glyph request timed out"));
 		}, timeoutMs);
 
-		channel.onmessage = (e: MessageEvent) => {
+		channel.onmessage = async (e: MessageEvent) => {
 			try {
-				const result = parseCallbackResponse(e.data, request);
+				const result = await parseOrVerifyCallback(e.data, { ...options.verification, expected: request });
 				cleanup();
 				if (focusOnResult) window.focus();
 				options.onStatus?.({ state: "completed", result });
@@ -908,13 +912,14 @@ export async function glyphRequest(
  * Reads the `?result=` query param, validates the callback shape, broadcasts it
  * to the waiting `glyphRequest()` Promise, then closes the tab.
  */
-export function handleRedirect(options: GlyphRedirectOptions = {}): GlyphRedirectResult {
+
+export async function handleRedirect(options: GlyphRedirectOptions = {}): Promise<GlyphRedirectResult> {
 	if (typeof window === "undefined") return { status: "missing" };
 	const encoded = new URLSearchParams(window.location.search).get("result");
 	if (!encoded) return { status: "missing" };
 	try {
 		const raw = JSON.parse(base64UrlToString(encoded)) as unknown;
-		const result = parseCallbackResponse(raw);
+		const result = await parseOrVerifyCallback(raw, options.verification);
 		const channel = new BroadcastChannel(`${GLYPH_RESULT_CHANNEL_PREFIX}${result.nonce}`);
 		channel.postMessage(result);
 		channel.close();
@@ -1043,6 +1048,29 @@ export function isSignedCallbackEnvelope(body: unknown): body is GlyphSignedCall
 	);
 }
 
+function expectsSignedCallback(options: GlyphCallbackVerificationOptions): boolean {
+	return Boolean(
+		options.requireSigned ||
+		options.expectedRequestHash !== undefined ||
+		options.expectedNetwork !== undefined ||
+		options.expectedDappOrigin !== undefined ||
+		options.expectedExp !== undefined ||
+		options.expectedCallbackUrl !== undefined ||
+		options.trustedPublicKeys !== undefined ||
+		options.verifySignature !== undefined,
+	);
+}
+
+export async function parseOrVerifyCallback(
+	body: unknown,
+	options: GlyphCallbackVerificationOptions = {},
+): Promise<GlyphCallbackResponse> {
+	if (isSignedCallbackEnvelope(body) || expectsSignedCallback(options)) {
+		return verifyCallbackEnvelope(body, options);
+	}
+	return parseCallbackResponse(body, options.expected);
+}
+
 function canonicalize(value: unknown): string {
 	if (value === null || typeof value !== "object") return JSON.stringify(value);
 	if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
@@ -1083,7 +1111,7 @@ export async function verifyCallbackEnvelope(
 	options: GlyphCallbackVerificationOptions = {},
 ): Promise<GlyphCallbackResponse> {
 	if (!isSignedCallbackEnvelope(body)) {
-		if (options.requireSigned) throw new Error("Callback body must be a signed Glyph callback envelope");
+		if (expectsSignedCallback(options)) throw new Error("Callback body must be a signed Glyph callback envelope");
 		return parseCallbackResponse(body, options.expected);
 	}
 
@@ -1113,6 +1141,7 @@ export async function verifyCallbackEnvelope(
 		throw new Error("Callback payload relay callback_url does not match expected callback URL");
 	}
 	if (body.proof.signed_payload !== canonicalJson(body.payload)) throw new Error("Callback signed_payload is not canonical");
+	if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(body.payload.result_hash)) throw new Error("Callback payload result_hash is invalid");
 	if (body.payload.result_hash !== sha256CanonicalJson(body.result)) {
 		throw new Error("Callback payload result_hash does not match result");
 	}
