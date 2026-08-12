@@ -1,5 +1,11 @@
 # @glyph-oss/connect
 
+## 4.1.0
+
+### Minor Changes
+
+- ee88f69: Add capability-free Relay v2 lifecycle diagnostics, typed safe errors, bounded SSE timeout recovery through `/v2/result` polling, and deterministic local support IDs while preserving existing v2 wire contracts.
+
 ## 4.0.1
 
 ### Patch Changes
