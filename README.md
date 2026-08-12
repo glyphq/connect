@@ -165,15 +165,23 @@ import {
 
 // Registers session, c_ callback capability, and r_ read capability at /v2/register/:session.
 const relay = await prepareRelaySession();
+const envelope = createEnvelope(request, { callback: relay.callbackUrl });
 const resultPromise = subscribeViaRelayV2(request, relay, {
+	requestHash: envelope.request_hash,
+	maxPollAttempts: 3,
 	verification: { requireSigned: true, verifySignature: verifySchnorrQ },
+	onEvent(event) {
+		console.info(event.milestone, event.supportId, event.snapshot);
+	},
 });
 
-launchGlyphRequest(createEnvelope(request, { callback: relay.callbackUrl }));
+launchGlyphRequest(envelope);
 const result = await resultPromise;
 ```
 
 `prepareRelaySession()` POSTs `{ callbackCap, readCap }` to `/v2/register/:session` before launch. `relay.callbackUrl` is `POST /v2/callback/:session/:callbackCap`, where `callbackCap` starts with `c_`. `relay.streamUrl` and `relay.resultUrl` use a separate `r_` read capability. The SDK enforces distinct, high-entropy base64url capabilities and never exposes the read capability to the wallet.
+
+Relay subscriptions retain the existing `onStatus` states and can additionally receive capability-free lifecycle events with `onEvent`. Stream timeouts and transient interruptions use a bounded `/v2/result` recovery window before failing. Recovered callbacks go through the same strict callback parser or signed-envelope verifier as SSE results. Use `requestHash` to include a deterministic local `supportId` in diagnostics. The support ID is never added to a Glyph envelope, URL, or signed payload, and no automatic same-nonce relaunch is performed.
 
 ## Compatibility and Security Policy
 
@@ -196,7 +204,7 @@ The SDK mirrors wallet `deep_link.rs` policy:
 `createTransferRequest` · `createScCallRequest` · `createSignMessageRequest` · `createVerifyMessageRequest` · `createConnectRequest`
 
 **Relay client**
-`subscribeViaRelayV2` · `createRelayCapabilities` · `relayUrls` · `registerRelaySession` · `prepareRelaySession`
+`subscribeViaRelayV2` · `createRelayCapabilities` · `relayUrls` · `registerRelaySession` · `prepareRelaySession` · `GlyphRelayError` · `deriveGlyphSupportId`
 
 **Utilities**
 `createNonce` · `createExpiry` · `withRequestDefaults` · `validateGlyphRequest` · `canonicalDappOrigin` · `isAllowedCallbackUrl` · `isAllowedDeliveryUrl` · `isOfficialRelayCallbackUrl` · `base64UrlToString` · `base64UrlToByteArray` · `parseCallbackResponse` · `verifyCallbackEnvelope` · `isSignedCallbackEnvelope`
