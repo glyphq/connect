@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type GlyphCallbackResponse, canonicalJson, createConnectRequest, parseOrVerifyCallback, sha256CanonicalJson, verifyCallbackEnvelope } from "./index";
+import { GlyphRelayError, type GlyphCallbackResponse, canonicalJson, createConnectRequest, deriveGlyphSupportId, parseOrVerifyCallback, sha256CanonicalJson, verifyCallbackEnvelope } from "./index";
 import {
 	createRelayCapabilities,
 	parseSSEStream,
@@ -128,9 +128,20 @@ describe("relay client", () => {
 		expect(prepared.registered).toBe(true);
 		await expect(subscribeViaRelayV2(request, prepared, { timeoutMs: 2_000 })).resolves.toEqual(result);
 		expect(calls).toEqual([
-			`POST https://relay.glyphq.org/v2/register/${caps.session}`,
-			`GET https://relay.glyphq.org/v2/stream/${caps.session}/${caps.readCap}`,
+				`POST https://relay.glyphq.org/v2/register/${caps.session}`,
+				`GET https://relay.glyphq.org/v2/stream/${caps.session}/${caps.readCap}`,
 		]);
+	});
+
+	test("registration uses a bounded abort budget and a typed safe error", async () => {
+		const caps = createRelayCapabilities();
+		globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+			init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+		})) as typeof fetch;
+		const error = await prepareRelaySession(caps, undefined, { registrationTimeoutMs: 5 }).catch((cause: unknown) => cause);
+		expect(error).toBeInstanceOf(GlyphRelayError);
+		expect((error as GlyphRelayError).code).toBe("registration_timeout");
+		expect((error as GlyphRelayError).message).toBe("Relay registration timed out");
 	});
 
 	test("verifyCallbackEnvelope verifies signed payloads with a custom verifier", async () => {
@@ -403,5 +414,132 @@ describe("relay client", () => {
 		const session = { ...relayUrls(caps), registered: true as const } as Awaited<ReturnType<typeof prepareRelaySession>>;
 
 		await expect(subscribeViaRelayV2(request, session, { timeoutMs: 2_000 })).resolves.toEqual(result);
+	});
+
+	test("recovers a timed out SSE callback through bounded signed result polling", async () => {
+		const request = createConnectRequest({ type: "connect", dapp: { origin: "https://demo.app" } });
+		const result: GlyphCallbackResponse = {
+			status: "connected",
+			type: "connect",
+			nonce: request.nonce,
+			identity: "AAAA",
+			permissions: ["transfer"],
+		};
+		const envelope = signedEnvelope(result);
+		const caps = createRelayCapabilities();
+		const session = { ...relayUrls(caps), registered: true as const } as Awaited<ReturnType<typeof prepareRelaySession>>;
+		const requestHash = envelope.payload.request_hash;
+		const milestones: string[] = [];
+		const calls: string[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = String(input);
+			calls.push(url);
+			if (url === session.streamUrl) {
+				return Promise.resolve(new Response(sseStream([sseEvent(JSON.stringify({ status: "timeout" }), "timeout")]), { headers: { "Content-Type": "text/event-stream" } }));
+			}
+			return Promise.resolve(new Response(JSON.stringify(envelope), { headers: { "Content-Type": "application/json" } }));
+		}) as typeof fetch;
+
+		await expect(subscribeViaRelayV2(request, session, {
+			requestHash,
+			streamTimeoutMs: 100,
+			pollTimeoutMs: 100,
+			pollIntervalMs: 0,
+			maxPollAttempts: 2,
+			onEvent: (event) => milestones.push(event.milestone),
+			verification: { verifySignature: () => true },
+		})).resolves.toEqual(result);
+		expect(milestones).toEqual([
+			"session_registered",
+			"stream_open_started",
+			"stream_opened",
+			"awaiting_approval",
+			"result_recovered_via_poll",
+			"callback_verified",
+		]);
+		expect(calls).toEqual([session.streamUrl, session.resultUrl]);
+	});
+
+	test("bounded polling reports pending without relaunching the nonce", async () => {
+		const request = createConnectRequest({ type: "connect", dapp: { origin: "https://demo.app" } });
+		const caps = createRelayCapabilities();
+		const session = { ...relayUrls(caps), registered: true as const } as Awaited<ReturnType<typeof prepareRelaySession>>;
+		const events: Array<{ milestone: string; snapshot: unknown }> = [];
+		const calls: string[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = String(input);
+			calls.push(url);
+			if (url === session.streamUrl) return Promise.resolve(new Response(sseStream([sseEvent("{}", "timeout")]), { headers: { "Content-Type": "text/event-stream" } }));
+			return Promise.resolve(new Response(JSON.stringify({ status: "pending" }), { headers: { "Content-Type": "application/json" } }));
+		}) as typeof fetch;
+
+		const error = await subscribeViaRelayV2(request, session, {
+			pollTimeoutMs: 100,
+			pollIntervalMs: 0,
+			maxPollAttempts: 2,
+			onEvent: (event) => events.push({ milestone: event.milestone, snapshot: event.snapshot }),
+		}).catch((cause: unknown) => cause);
+		expect(error).toBeInstanceOf(GlyphRelayError);
+		expect((error as GlyphRelayError).code).toBe("result_pending");
+		expect(events.map((event) => event.milestone)).toEqual([
+			"session_registered",
+			"stream_open_started",
+			"stream_opened",
+			"awaiting_approval",
+			"timed_out_pending",
+			"failed",
+		]);
+		expect(calls).toEqual([session.streamUrl, session.resultUrl, session.resultUrl]);
+	});
+
+	test("retries transient stream and result failures before polling recovery succeeds", async () => {
+		const request = createConnectRequest({ type: "connect", dapp: { origin: "https://demo.app" } });
+		const result: GlyphCallbackResponse = { status: "rejected", type: "connect", nonce: request.nonce, reason: "user_rejected" };
+		const caps = createRelayCapabilities();
+		const session = { ...relayUrls(caps), registered: true as const } as Awaited<ReturnType<typeof prepareRelaySession>>;
+		let resultCalls = 0;
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url === session.streamUrl) return Promise.reject(new TypeError("network failure with secret-like details"));
+			resultCalls++;
+			if (resultCalls === 1) return Promise.resolve(new Response("", { status: 503 }));
+			return Promise.resolve(new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } }));
+		}) as typeof fetch;
+
+		await expect(subscribeViaRelayV2(request, session, {
+			pollTimeoutMs: 100,
+			pollIntervalMs: 0,
+			maxPollAttempts: 3,
+		})).resolves.toEqual(result);
+		expect(resultCalls).toBe(2);
+	});
+
+	test("support IDs and diagnostics errors are deterministic and capability-free", async () => {
+		const requestHash = "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+		const supportId = deriveGlyphSupportId(requestHash);
+		expect(supportId).toBe(deriveGlyphSupportId(requestHash));
+		expect(supportId).toMatch(/^[A-Za-z0-9_-]{16}$/);
+		const caps = createRelayCapabilities();
+		const session = { ...relayUrls(caps), registered: true as const } as Awaited<ReturnType<typeof prepareRelaySession>>;
+		const request = createConnectRequest({ type: "connect", dapp: { origin: "https://demo.app" } });
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			if (String(input) === session.streamUrl) return Promise.resolve(new Response(sseStream([sseEvent("{}", "timeout")]), { headers: { "Content-Type": "text/event-stream" } }));
+			return Promise.resolve(new Response(JSON.stringify({ pending: true }), { headers: { "Content-Type": "application/json" } }));
+		}) as typeof fetch;
+		let seenEvent: unknown;
+		const error = await subscribeViaRelayV2(request, session, {
+			requestHash,
+			pollTimeoutMs: 20,
+			pollIntervalMs: 0,
+			maxPollAttempts: 1,
+			onEvent: (event) => { seenEvent = event; },
+		}).catch((cause: unknown) => cause);
+		const serialized = JSON.stringify({ event: seenEvent, error });
+		for (const secret of [caps.session, caps.callbackCap, caps.readCap, session.callbackUrl, request.nonce]) {
+			expect(serialized).not.toContain(secret);
+		}
+		expect(serialized).toContain(supportId);
+		expect(serialized).not.toContain("identity");
+		expect(serialized).not.toContain("https://demo.app");
 	});
 });

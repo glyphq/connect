@@ -359,6 +359,19 @@ function sha256(bytes: Uint8Array): Uint8Array {
 export function sha256Base64UrlSync(input: string): string { return bytesToBase64Url(sha256(new TextEncoder().encode(input))); }
 export function sha256CanonicalJson(value: unknown): string { return `sha256:${sha256Base64UrlSync(canonicalJson(value))}`; }
 
+/**
+ * Derive a short, non-authorizing support correlation identifier locally.
+ *
+ * This value is intentionally separate from every protocol envelope, URL, and
+ * signed payload. It is safe to include in local diagnostics only.
+ */
+export function deriveGlyphSupportId(requestHash: string): string {
+	if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(requestHash)) {
+		throw new Error("request hash must be a sha256 base64url value");
+	}
+	return sha256Base64UrlSync(`glyph-support/v2|${requestHash}`).slice(0, 16);
+}
+
 // ── Validation helpers ─────────────────────────────────────────────────────────
 
 function isGlyphPermission(value: unknown): value is GlyphPermission {
@@ -955,7 +968,16 @@ export {
 	registerRelaySession,
 	prepareRelaySession,
 	DEFAULT_RELAY_URL,
+	GlyphRelayError,
 	type GlyphRelayOptions,
+	type GlyphRelayErrorCode,
+	type GlyphRelayErrorOptions,
+	type GlyphRelayMilestone,
+	type GlyphRelayDiagnosticState,
+	type GlyphRelaySafeError,
+	type GlyphRelaySnapshot,
+	type GlyphRelayEvent,
+	type GlyphRelayRegistrationOptions,
 	type GlyphRelayCapabilities,
 	type GlyphRelayUrls,
 	type GlyphPreparedRelaySession,
